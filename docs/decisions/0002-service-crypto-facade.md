@@ -1,6 +1,6 @@
 # ADR-0002: citadel-service-crypto — the three-capability service crypto facade
 
-- **Status:** PROPOSED
+- **Status:** ACCEPTED (charge, 2026-07-17, recorded by advisor)
 - **Date:** 2026-07-17
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3.
 - **Invariants touched:** INV-1, INV-2, INV-9, INV-10
