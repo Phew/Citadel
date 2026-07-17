@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/citadel-proto",
+    "crates/citadel-core",
+    "crates/auth-service",
+    "crates/delivery-service",
+    "crates/directory-service",
+    "crates/blobstore-service",
+    "crates/kt-log",
+    "crates/test-harness",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/citadel-app/citadel"
+rust-version = "1.95.0"
+
+[workspace.dependencies]
+# Internal
+citadel-proto = { path = "crates/citadel-proto" }
+citadel-core = { path = "crates/citadel-core" }
+kt-log = { path = "crates/kt-log" }
+
+# Web / async
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+hyper = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+# Errors / logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# IDs / time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP client (harness / health probes)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

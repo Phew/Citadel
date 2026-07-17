@@ -1,0 +1,21 @@
+[package]
+name = "blobstore-service"
+description = "Encrypted attachment blob store (stub in M0)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "blobstore-service"
+path = "src/main.rs"
+
+[dependencies]
+citadel-proto = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tower-http = { workspace = true }

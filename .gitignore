@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local data
+/data/
+*.db
+*.db-journal
+
+# Node / Tauri (apps/desktop, M2+)
+node_modules/
+dist/
+apps/desktop/src-tauri/target/
+
+# Coverage / tooling
+/coverage/
+*.profraw
+.cargo-deny*

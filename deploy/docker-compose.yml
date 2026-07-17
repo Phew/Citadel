@@ -1,0 +1,154 @@
+# Citadel local stack (M0): Postgres 16, MinIO, and service stubs with /health.
+# Usage: docker compose -f deploy/docker-compose.yml up -d --build
+# Or:    just dev
+
+name: citadel
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-citadel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-citadel}
+      POSTGRES_DB: ${POSTGRES_DB:-citadel}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-citadel}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-citadelminio}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # MinIO client one-shot: create the attachments bucket for later milestones.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-citadel} $${MINIO_ROOT_PASSWORD:-citadelminio};
+      mc mb --ignore-existing local/citadel-attachments;
+      exit 0;
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-citadel}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-citadelminio}
+    restart: "no"
+
+  auth-service:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.service
+      args:
+        SERVICE: auth-service
+    environment:
+      PORT: "8081"
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-citadel}:${POSTGRES_PASSWORD:-citadel}@postgres:5432/${POSTGRES_DB:-citadel}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  delivery-service:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.service
+      args:
+        SERVICE: delivery-service
+    environment:
+      PORT: "8082"
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-citadel}:${POSTGRES_PASSWORD:-citadel}@postgres:5432/${POSTGRES_DB:-citadel}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  directory-service:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.service
+      args:
+        SERVICE: directory-service
+    environment:
+      PORT: "8083"
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-citadel}:${POSTGRES_PASSWORD:-citadel}@postgres:5432/${POSTGRES_DB:-citadel}
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8083/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  blobstore-service:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.service
+      args:
+        SERVICE: blobstore-service
+    environment:
+      PORT: "8084"
+      RUST_LOG: ${RUST_LOG:-info}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-citadel}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-citadelminio}
+    ports:
+      - "8084:8084"
+    depends_on:
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8084/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  postgres_data:
+  minio_data:

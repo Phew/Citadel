@@ -1,0 +1,30 @@
+# Multi-stage build for a single Citadel service binary.
+# Build arg SERVICE must match a workspace bin package name
+# (auth-service | delivery-service | directory-service | blobstore-service).
+
+ARG RUST_VERSION=1.95.0
+
+FROM rust:${RUST_VERSION}-bookworm AS builder
+WORKDIR /app
+
+# Cache dependency builds: copy manifests first.
+COPY Cargo.toml rust-toolchain.toml ./
+COPY crates ./crates
+
+# Build only the requested service to keep image builds focused.
+ARG SERVICE
+RUN cargo build --release -p ${SERVICE}
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --uid 10001 citadel
+
+ARG SERVICE
+ENV SERVICE_NAME=${SERVICE}
+COPY --from=builder /app/target/release/${SERVICE} /usr/local/bin/service
+
+USER citadel
+EXPOSE 8081 8082 8083 8084
+ENTRYPOINT ["/usr/local/bin/service"]
