@@ -1,3 +1,7 @@
+# Standalone package (not a root workspace member) so service CI does not
+# require WebView2 / Tauri native deps. Built via `pnpm tauri:dev` from apps/desktop.
+[workspace]
+
 [package]
 name = "citadel-desktop"
 version = "0.1.0"
@@ -6,9 +10,6 @@ authors = ["Citadel contributors"]
 edition = "2021"
 rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
-
-# Keep this package OUT of the workspace members for M2 prep so service CI
-# does not require WebView2 / Tauri native deps. Built via `pnpm tauri:dev`.
 
 [lib]
 name = "citadel_desktop_lib"
