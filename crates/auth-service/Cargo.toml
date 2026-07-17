@@ -19,3 +19,12 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tower-http = { workspace = true }
+thiserror = { workspace = true }
+# Service state lives in PostgreSQL via sqlx (PLAN.md §4); committed
+# migrations in ./migrations are the only schema source.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate"] }
+
+[dev-dependencies]
+# Property tests (PLAN.md §10): pool exactly-once under random concurrent
+# load, against real PostgreSQL in the CI db-tests job.
+proptest = "1"

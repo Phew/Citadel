@@ -123,6 +123,44 @@ jobs:
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
 
+  # Database-backed tests against REAL PostgreSQL 16 (PLAN.md §13: CI
+  # provisions the infrastructure; missing infra fails, never skips).
+  # Runs the ignored DB tests: KeyPackage pool exactly-once property test.
+  db-tests:
+    name: database-backed tests (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: rust
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: citadel
+          POSTGRES_PASSWORD: citadel
+          POSTGRES_DB: citadel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U citadel -d citadel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://citadel:citadel@127.0.0.1:5432/citadel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Run DB-backed tests
+        run: cargo test --locked -p auth-service -- --include-ignored
+
   # M1 exit requirement (PLAN.md §13): harness injects canary plaintext
   # through client paths, then every server table and log stream is scanned
   # for it on every push. A clean verdict is only reported after the

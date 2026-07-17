@@ -1,0 +1,15 @@
+# cargo-audit configuration.
+#
+# RUSTSEC-2023-0071 (rsa, Marvin timing sidechannel): rsa is in Cargo.lock
+# only as an UNBUILT optional dependency of sqlx's mysql backend — the
+# lockfile records every optional dependency, and no workspace manifest
+# enables sqlx/mysql (verified via `cargo tree`; the resolve never compiles
+# the mysql RSA auth path the attack needs). No fixed release exists.
+# Revisit on any sqlx bump; enabling the mysql feature requires clearing
+# this ignore first. (cargo-deny builds a feature-aware graph that excludes
+# sqlx-mysql, so deny.toml needs no matching entry.)
+
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071",
+]
