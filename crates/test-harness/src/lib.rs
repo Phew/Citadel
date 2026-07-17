@@ -4,7 +4,9 @@
 //! M1: [`stack`] (loud infra assertions), [`client`] (typed service driver).
 //!     F-flow fixtures, canary injection, and adversarial hooks build on these.
 
+pub mod canary;
 pub mod client;
+pub mod dbscan;
 pub mod stack;
 
 use serde::Deserialize;
