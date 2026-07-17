@@ -59,7 +59,7 @@ pub async fn scan_all_tables(
     let mut coverage = DbCoverage::default();
     for table in list_tables(pool).await? {
         coverage.tables_scanned += 1;
-        let quoted = format!("\"{}\"", table.replace('"', "\"\""));
+        let quoted = sql_identifier(&table);
         let rows = sqlx::query(&format!("SELECT to_jsonb(t)::text FROM {quoted} t"))
             .fetch_all(pool)
             .await
@@ -81,4 +81,41 @@ pub async fn scan_all_tables(
 /// Quote a SQL string literal (for the scanner's control-table writes).
 pub fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Quote a SQL identifier (table names come from our own information_schema
+/// but are quoted defensively regardless).
+pub fn sql_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_literal_wraps_and_doubles_single_quotes() {
+        assert_eq!(sql_string_literal("plain"), "'plain'");
+        assert_eq!(sql_string_literal("o'brien"), "'o''brien'");
+        assert_eq!(
+            sql_string_literal("'; DROP TABLE accounts; --"),
+            "'''; DROP TABLE accounts; --'"
+        );
+        assert_eq!(sql_string_literal(""), "''");
+    }
+
+    #[test]
+    fn string_literal_leaves_other_bytes_untouched() {
+        // standard_conforming_strings=on (PG default): backslashes and
+        // double quotes are ordinary bytes inside a string literal. Adding
+        // extra escaping would corrupt the planted control canary.
+        assert_eq!(sql_string_literal("a\\b \"c\" %_"), "'a\\b \"c\" %_'");
+    }
+
+    #[test]
+    fn identifier_wraps_and_doubles_double_quotes() {
+        assert_eq!(sql_identifier("accounts"), "\"accounts\"");
+        assert_eq!(sql_identifier("we\"ird"), "\"we\"\"ird\"");
+        assert_eq!(sql_identifier(""), "\"\"");
+    }
 }

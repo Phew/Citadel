@@ -322,3 +322,83 @@ fn flag_values(args: &[String], flag: &str) -> Vec<String> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn endpoints() -> StackEndpoints {
+        StackEndpoints {
+            auth: "http://auth".into(),
+            delivery: "http://delivery".into(),
+            directory: "http://directory".into(),
+            blobstore: "http://blobstore".into(),
+        }
+    }
+
+    #[test]
+    fn injection_points_cover_every_service_twice_with_unique_names() {
+        let points = injection_points(&endpoints());
+        assert_eq!(points.len(), 8, "4 services x 2 probes (body, header)");
+        let mut names: Vec<&str> = points.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            points.len(),
+            "manifest injection-point names must be unique"
+        );
+    }
+
+    #[test]
+    fn injection_points_keep_canaries_out_of_urls() {
+        // Hard convention: canaries travel in bodies and headers ONLY.
+        // Paths/query strings are request metadata that standard middleware
+        // legitimately logs (TraceLayer), so a canary there makes the scan
+        // report a false violation. Paths must stay static and query-free.
+        for (name, probe) in injection_points(&endpoints()) {
+            let (base, path) = match &probe {
+                Probe::PostBody { base, path } => (base, path),
+                Probe::GetHeader { base, path } => (base, path),
+            };
+            assert!(
+                base.starts_with("http"),
+                "{name}: base {base} is not a service URL"
+            );
+            assert!(
+                !path.contains(['?', '&', '#', '%']),
+                "{name}: path {path} must be static and query-free"
+            );
+            assert!(
+                matches!(*path, "/v1/canary-probe" | "/health"),
+                "{name}: unexpected path {path}; new injection points extend this test"
+            );
+        }
+    }
+
+    #[test]
+    fn flag_helpers_collect_repeated_and_first_values() {
+        let args: Vec<String> = ["--logs", "a", "--logs", "b", "--report", "r"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(flag_values(&args, "--logs"), vec!["a", "b"]);
+        assert_eq!(flag_value(&args, "--logs"), Some("a".into()));
+        assert_eq!(flag_value(&args, "--report"), Some("r".into()));
+        assert_eq!(flag_value(&args, "--manifest"), None);
+    }
+
+    #[test]
+    fn flag_value_at_end_without_value_is_absent() {
+        let args: Vec<String> = ["--logs"].into_iter().map(String::from).collect();
+        assert_eq!(flag_value(&args, "--logs"), None);
+        // A token that looks like a flag is still consumed as a value; the
+        // verify() stage's file reads then fail loudly, which is the
+        // intended behavior for malformed invocations.
+        let args: Vec<String> = ["--logs", "--report"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(flag_value(&args, "--logs"), Some("--report".into()));
+    }
+}
