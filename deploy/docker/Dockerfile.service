@@ -7,13 +7,13 @@ ARG RUST_VERSION=1.95.0
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /app
 
-# Cache dependency builds: copy manifests first.
-COPY Cargo.toml rust-toolchain.toml ./
+# Cache dependency builds: copy manifests + lock first.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 
 # Build only the requested service to keep image builds focused.
 ARG SERVICE
-RUN cargo build --release -p ${SERVICE}
+RUN cargo build --release -p ${SERVICE} --locked
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
