@@ -1,3 +1,4 @@
+import { getCoreTransport } from "@/lib/core-client";
 import { useCitadelCore } from "@/hooks/useCitadelCore";
 import { Composer } from "./Composer";
 import { ConversationList } from "./ConversationList";
@@ -10,6 +11,7 @@ import { MockBanner } from "./MockBanner";
  */
 export function AppChrome() {
   const shell = useCitadelCore();
+  const transport = getCoreTransport();
 
   const selected =
     shell.conversations.find((c) => c.groupId === shell.selectedGroupId) ??
@@ -56,8 +58,8 @@ export function AppChrome() {
       </div>
 
       <footer className="flex items-center justify-between border-t border-shell-border bg-shell-panel px-4 py-1.5 text-[10px] text-shell-muted">
-        <span>
-          mode={shell.status?.mode ?? "…"} · core=
+        <span data-testid="core-transport">
+          transport={transport} · mode={shell.status?.mode ?? "…"} · core=
           {shell.status?.coreVersion ?? "…"}
         </span>
         <span>

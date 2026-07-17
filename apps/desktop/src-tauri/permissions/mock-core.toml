@@ -1,0 +1,35 @@
+# Mock citadel-core invoke surface (M2). Not real MLS / backend access.
+[[permission]]
+identifier = "allow-core-get-status"
+description = "Allow reading mock core status (always disconnected / no session)."
+commands.allow = ["core_get_status"]
+
+[[permission]]
+identifier = "allow-core-list-conversations"
+description = "Allow listing mock conversations (default empty)."
+commands.allow = ["core_list_conversations"]
+
+[[permission]]
+identifier = "allow-core-list-messages"
+description = "Allow listing mock messages for a group."
+commands.allow = ["core_list_messages"]
+
+[[permission]]
+identifier = "allow-core-send-mock-local"
+description = "Allow mock-local composer send (no encrypt/deliver)."
+commands.allow = ["core_send_mock_local"]
+
+[[permission]]
+identifier = "allow-core-load-mock-fixtures"
+description = "Allow loading labeled mock layout fixtures."
+commands.allow = ["core_load_mock_fixtures"]
+
+[[permission]]
+identifier = "allow-core-clear-mock-fixtures"
+description = "Allow clearing mock fixtures back to empty state."
+commands.allow = ["core_clear_mock_fixtures"]
+
+[[permission]]
+identifier = "allow-core-send-message"
+description = "Allow calling real-send placeholder (mock always rejects)."
+commands.allow = ["core_send_message"]

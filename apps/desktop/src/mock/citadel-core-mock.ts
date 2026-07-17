@@ -13,7 +13,9 @@
  * - encryptionStatus is always "unavailable" (never claim E2E)
  * - any synthetic rows are tagged isMockFixture / isMock
  *
- * Swap: apps/desktop/src/lib/core-client.ts will point at Tauri commands in M3.
+ * Transport: used for browser `pnpm dev`. Inside the Tauri webview,
+ * `src/lib/core-client.ts` selects the invoke-backed mock instead.
+ * Real citadel-core swap is M3.
  */
 
 import type {
