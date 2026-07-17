@@ -4,6 +4,41 @@ For a fresh Opus instance with zero memory of today. Read `plans/PLAN.md`,
 `plans/AGENTS.md`, `plans/PLAN-OPUS-4.8.md` first, then this. You are the
 security core owner and blocking reviewer of all crypto surfaces.
 
+## SESSION 2 UPDATE (2026-07-17, day 2) — read this first
+
+Worked the three documented next-actions. All on `opus/m1-proto`, pushed
+(head now **`1e0876b`**). The "PENDING — exact next actions" section below
+is now DONE; kept for context.
+
+1. **ADR-0001 rev 2 (commit `b35b395`)** — resolved K3's issue 004 in full:
+   F1 (defined `kt_leaves` + `kt_sth` insert-only schema, supersedes PLAN §6
+   `kt_log` row), F2 (compile-time embedded Ed25519 anchor + `key_id`
+   rotation + client anti-rollback state; split-view named as residual gap),
+   F3 (debug_assert on handle len in `citadel-proto/src/kt.rs`, enforced by
+   ADR-0003 §6 64-byte cap), F4 (named
+   `tests/kt_persistence.rs::startup_fails_on_tampered_leaf_bytes`).
+   PROPOSED — **charge accepts, after K3 re-review**. Unblocks K3's KT
+   persistence PR.
+2. **ADR-0003 review → issue 005 (commit `fbca956`)** — approve with changes.
+   Findings A (token RNG must use the facade), B (unauthenticated
+   registration = unbounded permanent KT-log append; record as explicit M1
+   risk deferred to M8), C (token validity ignores `accounts.status`).
+   D = proto wrapper I own (fold into the key_id change).
+3. **KeyPackage pool review → issue 006 (commit `1e0876b`)** — clean approve.
+   Single-consumption correct (FOR UPDATE SKIP LOCKED), property test runs
+   vs real postgres:16 in CI (not skipped), no crypto in auth-service.
+
+**Repo facts confirmed this session:** M0 IS now merged to main (`14bafbe`,
+PR #1). `opus/m1-proto` is still NOT merged to main — flag: it blocks K3's
+deny.toml work (issue 002) and is the integration-checkpoint dependency.
+None of the three tasks needed the merge. Next free issue = **007**; next
+free ADR = **0004**.
+
+**My open follow-up (owed by me):** the citadel-proto change adding `key_id`
+to `TreeHeadTbs`/`SignedTreeHead` + the ADR-0003 §5 proof+head wrapper (one
+PR, golden-byte tests), and `docs/protocol/auth.md` pinning the F1 two-step
+KT verify flow. Neither blocks K3.
+
 ## Where the work lives
 
 - Worktree: `C:\Users\charge\Documents\GitHub\Citadel\Citadel-opus`
