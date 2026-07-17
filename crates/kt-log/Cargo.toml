@@ -1,6 +1,6 @@
 [package]
 name = "kt-log"
-description = "Key transparency log library used by auth-service (stub in M0)"
+description = "Append-only key transparency Merkle log: signed tree heads, inclusion and consistency proofs (RFC 6962 shapes)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,5 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 citadel-proto = { workspace = true }
+citadel-service-crypto = { workspace = true }
+# Tree-head signing only, encapsulated in TreeHeadSigner (see lib.rs docs / ADR-0001).
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+thiserror = { workspace = true }
 
 [dev-dependencies]
+hex = "0.4"
+proptest = "1"
+uuid = { workspace = true }
