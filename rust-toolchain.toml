@@ -1,0 +1,5 @@
+# Pinned toolchain for Citadel. MSRV bumps require an ADR (PLAN.md §13).
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

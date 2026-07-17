@@ -1,0 +1,27 @@
+[package]
+name = "test-harness"
+description = "Multi-client integration test utilities and M0 stack probes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "test_harness"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wait-healthy"
+path = "src/bin/wait_healthy.rs"
+
+[dependencies]
+citadel-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
