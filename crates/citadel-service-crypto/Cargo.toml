@@ -1,0 +1,20 @@
+[package]
+name = "citadel-service-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The ONLY cryptography surface for Citadel server-side services (AGENTS.md rule 6): Ed25519 verify, SHA-256, OS-CSPRNG bytes. Nothing else."
+
+[dependencies]
+# Vetted primitive implementations only (INV-10). No custom crypto here, ever.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+sha2 = "0.10"
+getrandom = "0.2"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Test-only: generating keypairs to exercise verify(). Services never sign.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core"] }
+rand = "0.8"
