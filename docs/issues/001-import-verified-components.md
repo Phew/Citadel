@@ -56,3 +56,19 @@ Only item 1, the **Go oracle**, and only as a *test-time* cross-check:
 
 None — M1 continues either way. This only affects the strength/cost of the
 kt-log evidence package before M1 sign-off.
+
+## Decision (charge, 2026-07-17) — RESOLVED: Option A
+
+Reaffirming the decision first made in the chat-era advisory thread, now
+committed so it exists under AGENTS.md rule 3:
+
+- **Approved:** import the predecessor Go Merkle oracle as a *test-time
+  cross-check only* (`test-harness/oracles/merkle-go/` or similar). It never
+  ships in any product artifact. CI wiring by K3, fixture generation by
+  Opus. Mining predecessor test vectors into kt-log's corpus is included.
+- **Rejected:** importing the predecessor facade or proto crates (items
+  2–3). Fresh, reviewed implementations exist; imports would replace
+  reviewed code with unreviewed code.
+
+Recorded by the advisor on charge's explicit instruction. This issue is
+closed.
