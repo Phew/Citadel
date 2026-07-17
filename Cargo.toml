@@ -8,6 +8,7 @@ members = [
     "crates/directory-service",
     "crates/blobstore-service",
     "crates/kt-log",
+    "crates/citadel-service-crypto",
     "crates/test-harness",
 ]
 
@@ -23,6 +24,7 @@ rust-version = "1.95.0"
 citadel-proto = { path = "crates/citadel-proto" }
 citadel-core = { path = "crates/citadel-core" }
 kt-log = { path = "crates/kt-log" }
+citadel-service-crypto = { path = "crates/citadel-service-crypto" }
 
 # Web / async
 axum = "0.8"

@@ -77,6 +77,19 @@ impl Envelope {
     }
 }
 
+/// Body of the 409 returned when a commit loses the one-commit-per-epoch race
+/// (INV-6, F7). Carries the canonical winning commit so the losing client can
+/// rebase immediately without a second round-trip.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitConflict {
+    pub group_id: GroupId,
+    /// The epoch in which the rejected commit attempted to land.
+    pub epoch: u64,
+    /// The commit that won this epoch, exactly as fanned out
+    /// (kind == Commit, seq assigned).
+    pub canonical_commit: Envelope,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
