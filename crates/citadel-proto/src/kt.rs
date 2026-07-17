@@ -46,6 +46,19 @@ impl KtLeaf {
     pub fn leaf_bytes(&self) -> Vec<u8> {
         let tag = KT_LEAF_DOMAIN.as_bytes();
         let handle = self.handle.as_bytes();
+        // The u16-BE length prefix fixes the handle's field boundary in the
+        // signed leaf encoding. A handle >= 65_536 bytes would wrap the
+        // prefix and make it lie about where `handle` ends — an
+        // encoding-integrity footgun (docs/issues/004 F3) that becomes a
+        // real ambiguity the moment any later leaf field turns
+        // variable-width. auth-service caps handles at 64 bytes at
+        // registration (ADR-0003 §6); this assert enforces the encoder's
+        // side of that contract so a violation is caught in tests/debug
+        // rather than silently corrupting the KT leaf.
+        debug_assert!(
+            handle.len() <= u16::MAX as usize,
+            "KtLeaf handle exceeds u16 length prefix; auth-service must cap handle length (ADR-0003 §6)"
+        );
         let mut out = Vec::with_capacity(2 + tag.len() + 16 + 2 + handle.len() + 32 + 8);
         out.extend_from_slice(&(tag.len() as u16).to_be_bytes());
         out.extend_from_slice(tag);
