@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       # Toolchain comes ONLY from rust-toolchain.toml: MSRV/toolchain moves
       # happen by ADR (PLAN.md §13), never as a workflow side effect.
@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
@@ -105,7 +105,7 @@ jobs:
     needs: rust
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
@@ -158,7 +158,7 @@ jobs:
       DATABASE_URL: postgres://citadel:citadel@127.0.0.1:5432/citadel
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
@@ -183,7 +183,7 @@ jobs:
       CITADEL_DATABASE_URL: postgres://citadel:citadel@127.0.0.1:5432/citadel
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
@@ -227,7 +227,7 @@ jobs:
       desktop: ${{ steps.filter.outputs.desktop }}
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Path filter
         uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
@@ -250,7 +250,7 @@ jobs:
         working-directory: apps/desktop
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       # Tauri links WebKitGTK; unit tests still compile the native crate graph.
       - name: Install system deps (WebKitGTK)
