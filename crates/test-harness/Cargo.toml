@@ -32,5 +32,10 @@ base64 = { workspace = true }
 # Evidence scans against real PostgreSQL (PLAN.md §4 stack). Dynamic queries
 # only; the scanner needs no compile-time-checked macros.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+# Client-side signing for tests (testkeys): the harness stands in for the
+# client, which legitimately owns crypto (INV-2; ADR-0002 §4 rev 2 scope
+# note — the confinement check covers only the four service crates).
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+citadel-service-crypto = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "auth-service"
-description = "Accounts, devices, KeyPackage pool, KT log API (stub in M0)"
+description = "Accounts, devices, KeyPackage pool, KT log API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 citadel-proto = { workspace = true }
+citadel-service-crypto = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -20,11 +21,20 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tower-http = { workspace = true }
 thiserror = { workspace = true }
+# Token wire encoding is base64url no-pad (ADR-0003 §2); proto's b64 helpers
+# are standard-padded and do not cover the token string.
+base64 = { workspace = true }
 # Service state lives in PostgreSQL via sqlx (PLAN.md §4); committed
 # migrations in ./migrations are the only schema source.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate", "macros"] }
 
 [dev-dependencies]
 # Property tests (PLAN.md §10): pool exactly-once under random concurrent
 # load, against real PostgreSQL in the CI db-tests job.
 proptest = "1"
+# Client-side Ed25519 signers for challenge-response tests. Services are
+# crypto-confined (ADR-0002 §4: dev-deps included), so the signer lives in
+# the client-side harness, not here.
+test-harness = { path = "../test-harness" }
+# Router-level endpoint tests drive the axum app in-process.
+tower = { workspace = true, features = ["util"] }

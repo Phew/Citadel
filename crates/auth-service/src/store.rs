@@ -34,11 +34,13 @@ pub struct ConsumedPackage {
 }
 
 /// Apply the committed migrations to `pool`. Migrations are the only schema
-/// source (no init.sql duplication beyond the M0 sentinel).
+/// source (no init.sql duplication beyond the M0 sentinel). They are
+/// EMBEDDED at compile time: the release binary migrates at startup inside
+/// a container that has no source tree, so a runtime path lookup would be
+/// a startup crash (first compose-smoke run of the F1 endpoints failed on
+/// exactly that).
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let migrator = sqlx::migrate::Migrator::new(path.as_path()).await?;
-    migrator.run(pool).await
+    sqlx::migrate!("./migrations").run(pool).await
 }
 
 /// Add packages to a device's pool; returns the unconsumed pool size after

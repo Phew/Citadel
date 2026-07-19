@@ -1,13 +1,15 @@
 //! Multi-client integration test utilities.
 //!
 //! M0: stack health probes and shared constants.
-//! M1: [`stack`] (loud infra assertions), [`client`] (typed service driver).
+//! M1: [`stack`] (loud infra assertions), [`client`] (typed service driver),
+//!     [`testkeys`] (deterministic client-side Ed25519 signers for tests).
 //!     F-flow fixtures, canary injection, and adversarial hooks build on these.
 
 pub mod canary;
 pub mod client;
 pub mod dbscan;
 pub mod stack;
+pub mod testkeys;
 
 use serde::Deserialize;
 
