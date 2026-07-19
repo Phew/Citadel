@@ -25,13 +25,14 @@ charge (human) is the sole approval authority for: ADR acceptance, milestone sig
 3. **A decision exists only when committed** to `docs/decisions/` (ADRs) or `docs/protocol/` (specs). Chat relays, advisor outputs, and PROPOSED drafts authorize nothing. PROPOSED becomes ACCEPTED only by a commit from charge.
 4. **Tests never silently pass.** Missing infrastructure is a test failure. CI provisions what tests need. See PLAN.md §13.
 5. **citadel-proto is canonical** for every wire and signing contract. Conflicting docs get amended to match it.
-6. **Crypto confinement.** Services touch cryptography only through the Opus-owned facade crate `citadel-service-crypto` (verify, sha256, OS-CSPRNG bytes; nothing else). deny.toml enforces it. A service needing a fourth capability is a design smell: escalate, don't extend.
+6. **Crypto confinement.** Services touch cryptography only through the Opus-owned facade crate `citadel-service-crypto` (verify, sha256, OS-CSPRNG bytes; nothing else). Enforced by `ci/check_crypto_confinement.py` in the CI audit job (ADR-0002 §4 rev 2; deny.toml covers advisories/licenses, not this rule). A service needing a fourth capability is a design smell: escalate, don't extend.
 7. **No external posting by agents.** Requests, conflicts, and issues go to `docs/issues/NNN-<title>.md`; charge mirrors externally if ever needed.
 8. **Escalate, don't improvise.** A missing spec detail, a rule conflict, or an unimplementable requirement means: stop, write it to docs/issues/ or a PROPOSED ADR, flag charge. This has worked every time it was used; keep using it.
 9. **Comments are encouraged** at crypto call sites, invariant boundaries, and anywhere an auditor would ask "why." Forbidden: commented-out code and TODOs without a linked docs/issues entry. (This explicitly replaces any prior no-comments rule.)
 10. **Every PR description states**: milestone and flow implemented, invariants touched, and the named tests that prove compliance.
 11. **Fresh agent session per milestone**: "Read plans/, review repo state, continue from MX."
 12. **Model changes get logged** in the roster table above, same commit as the change takes effect.
+13. **No AI attribution signatures** (charge, 2026-07-19). Commits, PR titles/bodies, code, and docs carry no agent self-attribution: no `Co-Authored-By: Claude/...` trailers, no "Generated with Claude Code" (or equivalent) footers, no model names in commit messages. Applies to every agent and the advisor. Authorship is tracked by branch prefix and the roster table, which is enough; the repo speaks with one voice. (Honest process descriptions, like the README's build-process section or roster/model logging per rule 12, are unaffected — this bans signatures, not transparency.)
 
 ## Sequencing
 
