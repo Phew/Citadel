@@ -16,4 +16,6 @@ thiserror = { workspace = true }
 [dev-dependencies]
 hex = "0.4"
 proptest = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 uuid = { workspace = true }

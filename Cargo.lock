@@ -1031,6 +1031,8 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror",
  "uuid",
 ]
