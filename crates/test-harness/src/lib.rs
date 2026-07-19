@@ -1,7 +1,11 @@
 //! Multi-client integration test utilities.
 //!
 //! M0: stack health probes and shared constants.
-//! M1+: F-flow harness, canary plaintext injection, adversarial suite hooks (K3/Opus).
+//! M1: [`stack`] (loud infra assertions), [`client`] (typed service driver).
+//!     F-flow fixtures, canary injection, and adversarial hooks build on these.
+
+pub mod client;
+pub mod stack;
 
 use serde::Deserialize;
 

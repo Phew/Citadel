@@ -114,6 +114,11 @@ jobs:
       - name: Wait for health endpoints
         run: ./target/debug/wait-healthy --timeout-secs 300
 
+      # Stack-backed harness tests (#[ignore] by default; here the stack is
+      # provisioned, so they MUST run — a green check means they did, §13).
+      - name: Harness stack-backed tests
+        run: cargo test --locked -p test-harness -- --include-ignored
+
       - name: Compose down
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
