@@ -28,9 +28,36 @@ fn db_url() -> String {
     )
 }
 
+/// Connect and migrate in a per-test schema. The KT tables are GLOBALLY
+/// sequenced (`kt_leaves.seq` is one BIGSERIAL per database) and the
+/// leaf-index = seq - 1 guard (ADR-0001 §4) is exact only when the test
+/// owns its sequence: parallel tests sharing one database and one sequence
+/// would burn each other's seq values and trip the drift guard. Isolation
+/// here is a fresh schema per case — the same philosophy as fresh random
+/// UUIDs elsewhere, never TRUNCATE.
 async fn fresh_pool() -> PgPool {
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&db_url())
+        .await
+        .expect("connect to real PostgreSQL (CI provisions it)");
+    let schema = format!("t_{}", AccountId::new().as_uuid().simple());
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin)
+        .await
+        .expect("create per-test schema");
+
     let pool = PgPoolOptions::new()
-        .max_connections(16)
+        .max_connections(8)
+        .after_connect(move |conn, _meta| {
+            let schema = schema.clone();
+            Box::pin(async move {
+                sqlx::query(&format!("SET search_path TO \"{schema}\""))
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
