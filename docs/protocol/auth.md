@@ -106,7 +106,9 @@ key. PLAN.md §7 F1:
    3. The RFC 9162 inclusion proof verifies: the leaf hash
       `SHA-256(0x00 || KtLeaf::leaf_bytes())` — where `KtLeaf` is rebuilt from
       the client's *own* `account_id`, handle, identity public key, and the
-      server-reported `appended_at` — combined with `audit_path` reproduces
+      server-reported append timestamp `RegisterAccountResponse.kt_appended_at`
+      (returned at registration, step 2 — the one leaf field the client cannot
+      derive itself) — combined with `audit_path` reproduces
       `signed_tree_head.tbs.root_hash`. This is the honesty-critical step: the
       client checks the log committed to **its** key, not just to *some* tree.
    4. Seed `anchor_state = (S, root_hash)` (§2).

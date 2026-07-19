@@ -133,6 +133,10 @@ pub async fn register_account(
         account_id: tbs.account_id,
         device_id: tbs.device_id,
         kt_leaf_index: leaf_index,
+        // The client needs the server-assigned timestamp to rebuild its own
+        // leaf for the F1 step-5 self-inclusion check (it is part of
+        // KtLeaf::leaf_bytes()); report the exact value we appended.
+        kt_appended_at: leaf.appended_at,
         kt_tree_head: sth,
     })
 }
