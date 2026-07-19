@@ -1,6 +1,6 @@
 # ADR-0002: citadel-service-crypto — the three-capability service crypto facade
 
-- **Status:** ACCEPTED (design, charge 2026-07-17) — **§4 enforcement: PROPOSED amendment (2026-07-18), awaiting charge re-acceptance.** The facade design charge accepted is unchanged; only §4's enforcement *mechanism* is amended (see Revision history).
+- **Status:** ACCEPTED (design, charge 2026-07-17; §4 rev 2 enforcement amendment re-accepted by charge 2026-07-18 via PR #8 merge, recorded by advisor). docs/issues/002 is closed as superseded.
 - **Date:** 2026-07-17 (rev 1); 2026-07-18 (rev 2, §4 amendment)
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3.
 - **Invariants touched:** INV-1, INV-2, INV-9, INV-10

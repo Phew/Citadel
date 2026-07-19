@@ -1,6 +1,6 @@
 # ADR-0001: Key transparency log design (RFC 6962 shape, encapsulated tree-head signing)
 
-- **Status:** PROPOSED
+- **Status:** ACCEPTED (charge, 2026-07-19, after K3's issue-004 confirmation that rev 2 closes F1-F4; recorded by advisor). Forward note from the confirmation: kt_sth needs a key_id column now that the key_id-carrying STH (PR #7) is on main.
 - **Date:** 2026-07-17 (rev 2)
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3 (required before acceptance per AGENTS.md).
 - **Invariants touched:** INV-2, INV-4, INV-5, INV-9, INV-10
