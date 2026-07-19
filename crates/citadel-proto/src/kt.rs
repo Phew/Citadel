@@ -23,6 +23,23 @@ pub const KT_LEAF_DOMAIN: &str = "citadel/v1/kt-leaf";
 #[serde(transparent)]
 pub struct KtHash(#[serde(with = "b64fixed32")] pub [u8; 32]);
 
+/// Identifier for the log's signing key, carried in every tree head so a
+/// client can select the matching pinned anchor before checking the
+/// signature (ADR-0001 §5).
+///
+/// It is `SHA-256(log_ed25519_public_key)` — the RFC 6962 §3.2 LogID
+/// construction (no novel crypto, INV-10). Because it is derived from the
+/// key, the client needs no separate id registry: it maps each embedded
+/// anchor to a `KeyId` by hashing the anchor once, then an STH verifies iff
+/// its `key_id` names an embedded anchor *and* the signature checks under
+/// that anchor. Carrying it in the signed input also binds each head to the
+/// key that signed it, so a signature can never be re-presented as if made
+/// under a different anchor. kt-log computes it via the crypto facade
+/// (`sha256`); this module only carries the opaque bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct KeyId(#[serde(with = "b64fixed32")] pub [u8; 32]);
+
 /// The content of one KT log leaf: a binding of an account to an identity key.
 /// Appended at registration; identity-key rotation (post-v1) appends a new leaf,
 /// never mutates an old one.
@@ -74,6 +91,10 @@ impl KtLeaf {
 /// The signed portion of a tree head.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeHeadTbs {
+    /// Identifies the anchor that signed this head; the client selects the
+    /// matching pinned key by this id before verifying the signature
+    /// (ADR-0001 §5). `SHA-256` of the log's Ed25519 public key.
+    pub key_id: KeyId,
     /// Number of leaves in the tree.
     pub tree_size: u64,
     /// RFC 6962 Merkle root hash over all leaves.
@@ -84,12 +105,18 @@ pub struct TreeHeadTbs {
 
 impl TreeHeadTbs {
     /// Deterministic bytes the log key signs: domain tag (u16-BE length ||
-    /// bytes) || tree_size (u64-BE) || root_hash (32B) || timestamp (i64-BE).
+    /// bytes) || key_id (32B) || tree_size (u64-BE) || root_hash (32B) ||
+    /// timestamp (i64-BE).
+    ///
+    /// `key_id` is inside the signed input on purpose: the signature then
+    /// commits to which key made it, so a head cannot be relabelled under a
+    /// different anchor (ADR-0001 §5).
     pub fn signing_input(&self) -> Vec<u8> {
         let tag = KT_TREE_HEAD_DOMAIN.as_bytes();
-        let mut out = Vec::with_capacity(2 + tag.len() + 8 + 32 + 8);
+        let mut out = Vec::with_capacity(2 + tag.len() + 32 + 8 + 32 + 8);
         out.extend_from_slice(&(tag.len() as u16).to_be_bytes());
         out.extend_from_slice(tag);
+        out.extend_from_slice(&self.key_id.0);
         out.extend_from_slice(&self.tree_size.to_be_bytes());
         out.extend_from_slice(&self.root_hash.0);
         out.extend_from_slice(&self.timestamp.to_be_bytes());
@@ -124,6 +151,23 @@ pub struct ConsistencyProof {
     pub first_tree_size: u64,
     pub second_tree_size: u64,
     pub path: Vec<KtHash>,
+}
+
+/// Response body of `GET /v1/kt/proof?leaf=<index>[&tree_size=<n>]`
+/// (ADR-0003 §5): the inclusion proof **and** the exact signed tree head it
+/// verifies against, returned together atomically.
+///
+/// The two must describe the same tree — kt-log's `verify_inclusion` rejects
+/// a proof whose `tree_size` differs from the head's. Pairing them in one
+/// response closes the TOCTOU window where the log grows between a
+/// fetch-proof and a fetch-head call and the client is handed a proof and a
+/// head that no longer match. The client verifies `proof` against
+/// `signed_tree_head` under its pinned anchor (selected by
+/// `signed_tree_head.tbs.key_id`); see docs/protocol/auth.md.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KtProofResponse {
+    pub proof: InclusionProof,
+    pub signed_tree_head: SignedTreeHead,
 }
 
 #[cfg(test)]
@@ -169,6 +213,7 @@ mod tests {
     fn sth_json_roundtrip() {
         let sth = SignedTreeHead {
             tbs: TreeHeadTbs {
+                key_id: KeyId([5; 32]),
                 tree_size: 7,
                 root_hash: KtHash([9; 32]),
                 timestamp: 1_700_000_000,
@@ -178,23 +223,69 @@ mod tests {
         let json = serde_json::to_string(&sth).unwrap();
         let back: SignedTreeHead = serde_json::from_str(&json).unwrap();
         assert_eq!(sth, back);
-        // Flattened TBS: fields appear at the top level of the JSON object.
+        // Flattened TBS: fields (including key_id) appear at the top level.
         assert!(json.contains("\"tree_size\":7"));
+        assert!(json.contains("\"key_id\":"));
     }
 
     #[test]
     fn tree_head_signing_input_pinned() {
         let tbs = TreeHeadTbs {
+            key_id: KeyId([0xAB; 32]),
             tree_size: 1,
             root_hash: KtHash([0; 32]),
             timestamp: 2,
         };
         let input = tbs.signing_input();
         let tag = KT_TREE_HEAD_DOMAIN.as_bytes();
-        assert_eq!(input.len(), 2 + tag.len() + 8 + 32 + 8);
-        assert_eq!(
-            &input[2 + tag.len()..2 + tag.len() + 8],
-            &1u64.to_be_bytes()
-        );
+        // Layout: u16 tag len || tag || key_id(32) || tree_size(8) ||
+        // root_hash(32) || timestamp(8).
+        assert_eq!(input.len(), 2 + tag.len() + 32 + 8 + 32 + 8);
+        let mut off = 2 + tag.len();
+        assert_eq!(&input[off..off + 32], &[0xAB; 32]);
+        off += 32;
+        assert_eq!(&input[off..off + 8], &1u64.to_be_bytes());
+    }
+
+    #[test]
+    fn key_id_is_covered_by_signing_input() {
+        // Changing only key_id changes the signed bytes: the signature binds
+        // the head to its signing key (ADR-0001 §5).
+        let base = TreeHeadTbs {
+            key_id: KeyId([1; 32]),
+            tree_size: 3,
+            root_hash: KtHash([7; 32]),
+            timestamp: 99,
+        };
+        let mut other = base;
+        other.key_id = KeyId([2; 32]);
+        assert_ne!(base.signing_input(), other.signing_input());
+    }
+
+    #[test]
+    fn kt_proof_response_roundtrip() {
+        let resp = KtProofResponse {
+            proof: InclusionProof {
+                leaf_index: 2,
+                tree_size: 5,
+                audit_path: vec![KtHash([1; 32]), KtHash([2; 32])],
+            },
+            signed_tree_head: SignedTreeHead {
+                tbs: TreeHeadTbs {
+                    key_id: KeyId([4; 32]),
+                    tree_size: 5,
+                    root_hash: KtHash([8; 32]),
+                    timestamp: 1_700_000_001,
+                },
+                signature: Signature([6; 64]),
+            },
+        };
+        // Proof and head describe the same tree (ADR-0003 §5 invariant).
+        assert_eq!(resp.proof.tree_size, resp.signed_tree_head.tbs.tree_size);
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: KtProofResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp, back);
+        assert!(json.contains("\"proof\":"));
+        assert!(json.contains("\"signed_tree_head\":"));
     }
 }
