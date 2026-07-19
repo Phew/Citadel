@@ -122,3 +122,47 @@ jobs:
       - name: Compose down
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
+
+  # M1 exit requirement (PLAN.md §13): harness injects canary plaintext
+  # through client paths, then every server table and log stream is scanned
+  # for it on every push. A clean verdict is only reported after the
+  # scanner's control canary is detected, so green means the scan ran.
+  canary-scan:
+    name: no-plaintext canary scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: rust
+    env:
+      CITADEL_DATABASE_URL: postgres://citadel:citadel@127.0.0.1:5432/citadel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build harness binaries
+        run: cargo build --locked -p test-harness --bins
+
+      - name: Compose up
+        run: docker compose -f deploy/docker-compose.yml up -d --build
+
+      - name: Wait for health endpoints
+        run: ./target/debug/wait-healthy --timeout-secs 300
+
+      - name: Inject canaries through client paths
+        run: ./target/debug/canary-scan inject --out canary-manifest.json
+
+      - name: Capture all container logs
+        run: docker compose -f deploy/docker-compose.yml logs --no-log-prefix > canary-logs.txt
+
+      - name: Scan all server tables and logs for canaries
+        run: ./target/debug/canary-scan verify --manifest canary-manifest.json --logs canary-logs.txt --report canary-report.json
+
+      - name: Compose down
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v

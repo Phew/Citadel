@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "wait-healthy"
 path = "src/bin/wait_healthy.rs"
 
+[[bin]]
+name = "canary-scan"
+path = "src/bin/canary_scan.rs"
+
 [dependencies]
 citadel-proto = { workspace = true }
 serde = { workspace = true }
@@ -23,5 +27,10 @@ reqwest = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+# Evidence scans against real PostgreSQL (PLAN.md §4 stack). Dynamic queries
+# only; the scanner needs no compile-time-checked macros.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [dev-dependencies]
