@@ -108,12 +108,21 @@ fn post(uri: &str, body: Vec<u8>, token: Option<&str>) -> Request<Body> {
 }
 
 async fn call<T: DeserializeOwned>(app: axum::Router, req: Request<Body>) -> (StatusCode, T) {
+    let target = format!("{} {}", req.method(), req.uri());
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap())
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "{target} returned {status} with an unparseable body ({e}): {:?}",
+                String::from_utf8_lossy(&bytes)
+            )
+        }),
+    )
 }
 
 fn registration_request(
