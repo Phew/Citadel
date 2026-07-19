@@ -55,6 +55,7 @@ dependencies = [
  "base64",
  "citadel-proto",
  "citadel-service-crypto",
+ "kt-log",
  "proptest",
  "serde",
  "serde_json",

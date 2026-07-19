@@ -13,6 +13,9 @@ path = "src/main.rs"
 [dependencies]
 citadel-proto = { workspace = true }
 citadel-service-crypto = { workspace = true }
+# KT log: tree-head signing stays encapsulated in TreeHeadSigner (ADR-0001
+# §3); this service never gains a general signing capability.
+kt-log = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
