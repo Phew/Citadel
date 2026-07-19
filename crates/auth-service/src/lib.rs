@@ -1,11 +1,14 @@
 //! auth-service: accounts, devices, KeyPackage pool, KT log API.
 //!
-//! M1 so far: the database store layer (schema 0001) with the transactional
-//! one-time KeyPackage pool; the F1 challenge-response / bearer-token flow
-//! (ADR-0003, [`auth`]); KT persistence with the fatal startup root check
-//! (ADR-0001 §4, [`kt_store`]); and the HTTP edge over both ([`server`]).
-//! Registration and the KeyPackage pool endpoints land next.
+//! M1: the database store layer (schema 0001) with the transactional
+//! one-time KeyPackage pool ([`store`]); the F1 challenge-response /
+//! bearer-token flow (ADR-0003, [`auth`]); unauthenticated registration
+//! with the atomic KT leaf append (ADR-0003 §6, ADR-0001 §4(b),
+//! [`accounts`]); KT persistence with the fatal startup root check
+//! (ADR-0001 §4, [`kt_store`]); and the HTTP edge over all of it
+//! ([`server`]).
 
+pub mod accounts;
 pub mod auth;
 pub mod kt_store;
 pub mod server;

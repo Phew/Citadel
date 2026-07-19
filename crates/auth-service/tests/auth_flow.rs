@@ -286,7 +286,7 @@ async fn challenge_verify_endpoints_roundtrip() {
     let app = server::router(AppState {
         pool: pool.clone(),
         kt: std::sync::Arc::new(KtState {
-            log: std::sync::Mutex::new(kt_log::KtLog::new()),
+            log: tokio::sync::Mutex::new(kt_log::KtLog::new()),
             signer: kt_log::TreeHeadSigner::from_seed(&[0xA5; 32]),
         }),
     });

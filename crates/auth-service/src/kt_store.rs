@@ -11,9 +11,22 @@
 
 use citadel_proto::credential::Signature;
 use citadel_proto::kt::{KeyId, KtHash, SignedTreeHead, TreeHeadTbs};
-use kt_log::KtLog;
-use sqlx::{PgPool, Row};
+use kt_log::{KtLog, TreeHeadSigner};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
+
+/// KT log state shared by the service: the in-memory proof engine (rebuilt
+/// from `kt_leaves` at startup, ADR-0001 §4(c)) and the encapsulated
+/// tree-head signer (ADR-0001 §3 — auth-service holds the type but cannot
+/// sign arbitrary bytes).
+///
+/// The log mutex is async because registration holds it across the
+/// leaf+STH transaction: the in-memory index and the database `seq` must
+/// stay in lockstep, so the whole append is serialized (§4(b)).
+pub struct KtState {
+    pub log: tokio::sync::Mutex<KtLog>,
+    pub signer: TreeHeadSigner,
+}
 
 #[derive(Debug, Error)]
 pub enum KtStoreError {
@@ -110,14 +123,26 @@ pub async fn append_leaf_and_sth(
     sth: &SignedTreeHead,
 ) -> Result<i64, KtStoreError> {
     let mut tx = pool.begin().await?;
+    let seq = append_leaf_and_sth_in(&mut tx, leaf_bytes, leaf_index, sth).await?;
+    tx.commit().await?;
+    Ok(seq)
+}
 
+/// [`append_leaf_and_sth`] inside a caller-owned transaction, for callers
+/// (registration) whose own rows must commit atomically with the leaf and
+/// its STH. On `SeqMismatch` the caller MUST roll the transaction back.
+pub async fn append_leaf_and_sth_in(
+    tx: &mut Transaction<'_, Postgres>,
+    leaf_bytes: &[u8],
+    leaf_index: u64,
+    sth: &SignedTreeHead,
+) -> Result<i64, KtStoreError> {
     let row = sqlx::query("INSERT INTO kt_leaves (leaf_bytes) VALUES ($1) RETURNING seq")
         .bind(leaf_bytes)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
     let seq: i64 = row.get("seq");
     if seq < 1 || (seq - 1) as u64 != leaf_index || sth.tbs.tree_size != leaf_index + 1 {
-        tx.rollback().await?;
         return Err(KtStoreError::SeqMismatch {
             seq,
             expected_index: leaf_index,
@@ -133,10 +158,9 @@ pub async fn append_leaf_and_sth(
     .bind(&sth.tbs.root_hash.0[..])
     .bind(sth.tbs.timestamp as f64)
     .bind(&sth.signature.0[..])
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
 
-    tx.commit().await?;
     Ok(seq)
 }
 

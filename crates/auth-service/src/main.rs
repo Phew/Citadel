@@ -11,7 +11,7 @@ use auth_service::server::{self, AppState, KtState};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::info;
 
 const SERVICE_NAME: &str = "auth-service";
@@ -53,7 +53,7 @@ async fn main() {
     let app = server::router(AppState {
         pool,
         kt: Arc::new(KtState {
-            log: Mutex::new(log),
+            log: tokio::sync::Mutex::new(log),
             signer,
         }),
     });
