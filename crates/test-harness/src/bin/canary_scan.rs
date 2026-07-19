@@ -20,6 +20,7 @@
 //! docs/backlog.md for the M2+ message-path extension).
 
 use anyhow::{bail, Context, Result};
+use base64::Engine as _;
 use serde::Serialize;
 use std::process::ExitCode;
 use test_harness::canary::{self, CanaryHit, CanaryManifest, CanaryRecord};
@@ -85,6 +86,13 @@ async fn inject(args: &[String]) -> Result<()> {
                     .with_context(|| format!("inject canary into {point}"))?
                     .status()
             }
+            Probe::PostJson { base, path, body } => http
+                .post(format!("{base}{path}"))
+                .json(&body(&value))
+                .send()
+                .await
+                .with_context(|| format!("inject canary into {point}"))?
+                .status(),
             Probe::GetHeader { base, path } => http
                 .get(format!("{base}{path}"))
                 .header("x-citadel-canary", &value)
@@ -115,8 +123,22 @@ async fn inject(args: &[String]) -> Result<()> {
 }
 
 enum Probe {
-    PostBody { base: String, path: &'static str },
-    GetHeader { base: String, path: &'static str },
+    PostBody {
+        base: String,
+        path: &'static str,
+    },
+    /// Endpoint-shaped JSON body built from the canary value, for real
+    /// endpoints whose inputs are rejected before storage (the canary must
+    /// then provably appear nowhere).
+    PostJson {
+        base: String,
+        path: &'static str,
+        body: fn(&str) -> serde_json::Value,
+    },
+    GetHeader {
+        base: String,
+        path: &'static str,
+    },
 }
 
 /// One (description, request) pair per injection point. Canary channels are
@@ -141,6 +163,67 @@ fn injection_points(endpoints: &StackEndpoints) -> Vec<(String, Probe)> {
             },
         ));
     }
+
+    // M1 auth-service endpoints (ADR-0003). Only REJECTED inputs carry
+    // canaries here: the canary stands in for plaintext content, so it may
+    // only flow through fields the server must never store — a scan hit
+    // means rejected input was persisted. (A registration handle is stored
+    // plaintext BY DESIGN — handles are public metadata, not content — so
+    // the handle canary rides a 65-byte handle that ADR-0003 §6 rejects.)
+    let auth = endpoints.auth.to_string();
+    points.push((
+        "auth-service POST /v1/accounts (65-byte handle, rejected)".to_string(),
+        Probe::PostJson {
+            base: auth.clone(),
+            path: "/v1/accounts",
+            body: |canary| {
+                let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+                serde_json::json!({
+                    // Canaries are [A-Za-z0-9-]; padding pushes past the
+                    // 64-byte cap so registration MUST reject before storage.
+                    "handle": format!("{canary}-{}", "x".repeat(64)),
+                    "identity_pubkey": b64(&[0u8; 32]),
+                    "first_device": {
+                        "account_id": uuid::Uuid::nil(),
+                        "device_id": uuid::Uuid::nil(),
+                        "identity_pubkey": b64(&[0u8; 32]),
+                        "device_pubkey": b64(&[0u8; 32]),
+                        "issued_at": 0,
+                        "signature": b64(&[0u8; 64]),
+                    },
+                })
+            },
+        },
+    ));
+    points.push((
+        "auth-service POST /v1/auth/verify (client-sent challenge, never stored)".to_string(),
+        Probe::PostJson {
+            base: auth.clone(),
+            path: "/v1/auth/verify",
+            body: |canary| {
+                serde_json::json!({
+                    "device_id": uuid::Uuid::nil(),
+                    // The client-sent challenge is compared, never stored.
+                    "challenge": base64::engine::general_purpose::STANDARD.encode(canary),
+                    "signature": base64::engine::general_purpose::STANDARD.encode([0u8; 64]),
+                })
+            },
+        },
+    ));
+    points.push((
+        "auth-service POST /v1/devices/<nil>/key-packages (101-package batch, rejected)"
+            .to_string(),
+        Probe::PostJson {
+            base: auth,
+            path: "/v1/devices/00000000-0000-0000-0000-000000000000/key-packages",
+            body: |canary| {
+                let pkg = base64::engine::general_purpose::STANDARD.encode(canary);
+                // 101 > ADR-0003 §4's 100-package cap: rejected before the
+                // store layer, so the canary bytes may never reach a table.
+                serde_json::json!({ "packages": vec![pkg; 101] })
+            },
+        },
+    ));
     points
 }
 
@@ -339,7 +422,11 @@ mod tests {
     #[test]
     fn injection_points_cover_every_service_twice_with_unique_names() {
         let points = injection_points(&endpoints());
-        assert_eq!(points.len(), 8, "4 services x 2 probes (body, header)");
+        assert_eq!(
+            points.len(),
+            11,
+            "4 services x 2 probes (body, header) + 3 auth-service endpoint probes"
+        );
         let mut names: Vec<&str> = points.iter().map(|(n, _)| n.as_str()).collect();
         names.sort_unstable();
         names.dedup();
@@ -359,6 +446,7 @@ mod tests {
         for (name, probe) in injection_points(&endpoints()) {
             let (base, path) = match &probe {
                 Probe::PostBody { base, path } => (base, path),
+                Probe::PostJson { base, path, .. } => (base, path),
                 Probe::GetHeader { base, path } => (base, path),
             };
             assert!(
@@ -370,9 +458,47 @@ mod tests {
                 "{name}: path {path} must be static and query-free"
             );
             assert!(
-                matches!(*path, "/v1/canary-probe" | "/health"),
+                matches!(
+                    *path,
+                    "/v1/canary-probe"
+                        | "/health"
+                        | "/v1/accounts"
+                        | "/v1/auth/verify"
+                        | "/v1/devices/00000000-0000-0000-0000-000000000000/key-packages"
+                ),
                 "{name}: unexpected path {path}; new injection points extend this test"
             );
+        }
+    }
+
+    #[test]
+    fn endpoint_probe_bodies_embed_the_canary_where_rejection_is_required() {
+        // The registration canary's handle must exceed ADR-0003 §6's 64-byte
+        // cap; the publish probe must exceed §4's 100-package cap. If either
+        // invariant breaks, the canary could be legitimately stored and the
+        // scan would false-positive — fail here instead.
+        let points = injection_points(&endpoints());
+        let bodies: Vec<serde_json::Value> = points
+            .iter()
+            .filter_map(|(_, p)| match p {
+                Probe::PostJson { body, .. } => Some(body("CITADEL-CANARY-test-0001")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bodies.len(), 3);
+        for body in &bodies {
+            if let Some(handle) = body.get("handle") {
+                assert!(
+                    handle.as_str().unwrap().len() > 64,
+                    "handle canary must force the ADR-0003 §6 rejection"
+                );
+            }
+            if let Some(packages) = body.get("packages") {
+                assert!(
+                    packages.as_array().unwrap().len() > 100,
+                    "publish canary must force the ADR-0003 §4 rejection"
+                );
+            }
         }
     }
 

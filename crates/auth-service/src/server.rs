@@ -5,32 +5,31 @@
 //! (citadel_proto::error); auth failures always collapse to `unauthorized`
 //! (ADR-0003 §1).
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use citadel_proto::auth::{ChallengeRequest, ChallengeResponse, VerifyRequest, VerifyResponse};
+use citadel_proto::auth::{
+    ChallengeRequest, ChallengeResponse, DeviceKeyPackage, FetchKeyPackagesResponse,
+    KeyPackageBytes, PublishKeyPackagesRequest, PublishKeyPackagesResponse, RegisterAccountRequest,
+    RegisterAccountResponse, VerifyRequest, VerifyResponse,
+};
 use citadel_proto::error::{ErrorCode, ErrorResponse};
+use citadel_proto::ids::{AccountId, DeviceId};
 use citadel_proto::kt::KtProofResponse;
-use kt_log::{KtLog, TreeHeadSigner};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::PgPool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
+use crate::accounts::{self, RegisterError};
 use crate::auth::{self, AuthError};
 use crate::kt_store::{self, KtStoreError};
+use crate::store::{self, StoreError};
 
-/// KT log state: the in-memory proof engine (rebuilt from `kt_leaves` at
-/// startup, ADR-0001 §4(c)) and the encapsulated tree-head signer
-/// (ADR-0001 §3 — auth-service holds the type but cannot sign arbitrary
-/// bytes).
-pub struct KtState {
-    pub log: Mutex<KtLog>,
-    pub signer: TreeHeadSigner,
-}
+pub use crate::kt_store::KtState;
 
 /// Shared service state.
 #[derive(Clone)]
@@ -39,14 +38,18 @@ pub struct AppState {
     pub kt: Arc<KtState>,
 }
 
-/// The auth-service router: health probes, the F1 auth flow, and the KT
-/// read surface (PLAN.md §8, ADR-0003 §5, docs/protocol/auth.md §5).
+/// The auth-service router: health probes, the F1 auth flow (registration,
+/// challenge/verify, KeyPackage pool), and the KT read surface (PLAN.md §8,
+/// ADR-0003, docs/protocol/auth.md §5).
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/v1/auth/challenge", post(auth_challenge))
         .route("/v1/auth/verify", post(auth_verify))
+        .route("/v1/accounts", post(register))
+        .route("/v1/devices/{id}/key-packages", post(publish_key_packages))
+        .route("/v1/accounts/{id}/key-packages", get(fetch_key_packages))
         .route("/v1/kt/tree-head", get(kt_tree_head))
         .route("/v1/kt/proof", get(kt_proof))
         .route("/v1/kt/consistency", get(kt_consistency))
@@ -105,6 +108,118 @@ async fn auth_verify(
     }))
 }
 
+// ---------- Registration + KeyPackage pool (ADR-0003 §4, §6) ----------
+
+/// ADR-0003 §4: publish accepts at most 100 packages per request (F1's
+/// batch size; bounds the request body).
+const MAX_PUBLISH_BATCH: usize = 100;
+
+fn register_error(err: RegisterError) -> ApiError {
+    match err {
+        RegisterError::InvalidRequest(msg) => error_response(ErrorCode::InvalidRequest, msg),
+        RegisterError::Unauthorized => error_response(ErrorCode::Unauthorized, "unauthorized"),
+        RegisterError::Conflict => error_response(
+            ErrorCode::Conflict,
+            "account or device id already registered",
+        ),
+        RegisterError::Database(e) => {
+            tracing::error!(error = %e, "registration store error");
+            error_response(ErrorCode::Internal, "internal error")
+        }
+        RegisterError::Kt(e) => kt_error(e),
+    }
+}
+
+fn store_error(err: StoreError) -> ApiError {
+    match err {
+        StoreError::PoolExhausted(device) => error_response(
+            ErrorCode::KeyPackageUnavailable,
+            &format!("no unconsumed KeyPackage for device {device}"),
+        ),
+        StoreError::Database(e) => {
+            tracing::error!(error = %e, "pool store error");
+            error_response(ErrorCode::Internal, "internal error")
+        }
+    }
+}
+
+/// Bearer auth for the pool endpoints: `Authorization: Bearer <token>`,
+/// validated per ADR-0003 §3. Returns the token's device.
+async fn bearer_device(state: &AppState, headers: &HeaderMap) -> Result<DeviceId, ApiError> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| error_response(ErrorCode::Unauthorized, "unauthorized"))?;
+    auth::validate_token(&state.pool, token)
+        .await
+        .map_err(auth_error)
+}
+
+/// `POST /v1/accounts` — unauthenticated registration (ADR-0003 §6).
+async fn register(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterAccountRequest>,
+) -> Result<Json<RegisterAccountResponse>, ApiError> {
+    accounts::register_account(&state.pool, &state.kt, &req)
+        .await
+        .map(Json)
+        .map_err(register_error)
+}
+
+/// `POST /v1/devices/{id}/key-packages` — replenish the caller's pool.
+/// A device publishes only for itself; the batch cap is ADR-0003 §4.
+async fn publish_key_packages(
+    State(state): State<AppState>,
+    Path(device_id): Path<DeviceId>,
+    headers: HeaderMap,
+    Json(req): Json<PublishKeyPackagesRequest>,
+) -> Result<Json<PublishKeyPackagesResponse>, ApiError> {
+    // The cheap, stateless check runs first: a rejected batch touches no
+    // state, so nothing of it can be stored.
+    if req.packages.len() > MAX_PUBLISH_BATCH {
+        return Err(error_response(
+            ErrorCode::InvalidRequest,
+            "at most 100 KeyPackages per publish (ADR-0003 §4)",
+        ));
+    }
+    let token_device = bearer_device(&state, &headers).await?;
+    if token_device != device_id {
+        return Err(error_response(
+            ErrorCode::Forbidden,
+            "a device publishes KeyPackages only for itself",
+        ));
+    }
+    let packages: Vec<Vec<u8>> = req.packages.into_iter().map(|p| p.0).collect();
+    let pool_size = store::publish(&state.pool, device_id, &packages)
+        .await
+        .map_err(store_error)?;
+    Ok(Json(PublishKeyPackagesResponse { pool_size }))
+}
+
+/// `GET /v1/accounts/{id}/key-packages` — consuming fetch, one package per
+/// active device, all-or-nothing (ADR-0003 §4; store layer is the M1 pool).
+async fn fetch_key_packages(
+    State(state): State<AppState>,
+    Path(account_id): Path<AccountId>,
+    headers: HeaderMap,
+) -> Result<Json<FetchKeyPackagesResponse>, ApiError> {
+    // Any valid token may fetch (F2 DM creation targets other accounts).
+    bearer_device(&state, &headers).await?;
+    let consumed = store::consume_for_account(&state.pool, account_id)
+        .await
+        .map_err(store_error)?;
+    Ok(Json(FetchKeyPackagesResponse {
+        packages: consumed
+            .into_iter()
+            .map(|c| DeviceKeyPackage {
+                device_id: c.device_id,
+                package: KeyPackageBytes(c.package_bytes),
+            })
+            .collect(),
+    }))
+}
+
 // ---------- KT read surface (ADR-0001 §4, ADR-0003 §5) ----------
 
 type ApiError = (StatusCode, Json<ErrorResponse>);
@@ -157,7 +272,7 @@ async fn kt_proof(
     };
 
     let proof = {
-        let log = state.kt.log.lock().expect("kt log mutex poisoned");
+        let log = state.kt.log.lock().await;
         log.inclusion_proof(q.leaf, sth.tbs.tree_size)
     }
     .map_err(|_| {
@@ -187,7 +302,7 @@ async fn kt_consistency(
     Query(q): Query<ConsistencyQuery>,
 ) -> Result<Json<citadel_proto::kt::ConsistencyProof>, ApiError> {
     let proof = {
-        let log = state.kt.log.lock().expect("kt log mutex poisoned");
+        let log = state.kt.log.lock().await;
         log.consistency_proof(q.first, q.second)
     }
     .map_err(|_| {

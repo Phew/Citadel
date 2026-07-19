@@ -5,7 +5,7 @@
 //! CI `db-tests` job provisions postgres:16 and runs these with
 //! `--include-ignored`. Without DATABASE_URL the tests fail loudly.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use auth_service::kt_store::{self, KtStoreError};
 use auth_service::server::{self, AppState, KtState};
@@ -89,7 +89,7 @@ fn make_leaf(n: u64) -> KtLeaf {
 
 fn kt_state() -> Arc<KtState> {
     Arc::new(KtState {
-        log: Mutex::new(KtLog::new()),
+        log: tokio::sync::Mutex::new(KtLog::new()),
         signer: test_signer(),
     })
 }
@@ -98,7 +98,7 @@ fn kt_state() -> Arc<KtState> {
 /// endpoint uses: in-memory index first, then the single DB transaction.
 async fn append(pool: &PgPool, kt: &KtState, leaf: &KtLeaf) -> i64 {
     let (index, sth, leaf_bytes) = {
-        let mut log = kt.log.lock().unwrap();
+        let mut log = kt.log.lock().await;
         let index = log.append(leaf);
         let sth = kt.signer.sign_head(&log, now_epoch());
         (index, sth, leaf.leaf_bytes())
