@@ -12,6 +12,7 @@ charge: cybersecurity undergrad, sharp, moves fast, runs this solo around work s
 2. charge chose a complete restart: new repo "Citadel" (their name pick), roster Opus 4.8 + Kimi K3 + Grok 4.5, and every postmortem lesson baked into plans/AGENTS.md as hard rules and PLAN.md §13 as testing law.
 3. M0 merged (Grok, PR #1). Opus M1 day 1 shipped proto contracts + citadel-service-crypto facade + kt-log; day 2 shipped ADR-0001 rev 2, blocking reviews of ADR-0003 (approve w/ changes, issue 005) and the KeyPackage pool (clean approve, issue 006). K3 shipped six stacked m1 branches. opus/m1-proto merged to main as PR #2 (2026-07-17).
 4. Advisor moved into the repo 2026-07-17: citadel-advisor worktree, advisor/setup branch, role docs committed, gh access working. First log-opening audit found all six K3 CI runs red at setup (see queue).
+5. Day 3 (2026-07-18): advisor/setup partially merged as PR #4 (first two commits only; the wind-down commit was cherry-picked onto advisor/day3-sync). K3's day-2 session surfaced overnight: ADR-0002 §4 design review, deny-bans spike proving the issue-002 mechanism unworkable, harness-coverage branch, and an issue-numbering collision with Opus. Day-3 kickoff prompts sent to all three agents (see decision history for the tasking).
 
 ## Standing judgments (earned, keep applying)
 
@@ -34,15 +35,20 @@ charge: cybersecurity undergrad, sharp, moves fast, runs this solo around work s
 - Auth signing order: domain separator first ("citadel/v1/..." style), proto crate canonical, specs amend to match code contracts, never the reverse.
 - gh access: decision was a fine-grained repo-scoped PAT; what actually exists is a broad-scope OAuth keyring login (repo, workflow, account-wide) as account Phew. Works; flagged to charge, tightening is their open call.
 - Merge order ruling: opus/m1-proto first (done, PR #2), then advisor/setup (based on opus tip, merges clean now), then K3's stack in stated order ONLY after CI is real-green with db-tests / canary-scan / compose-smoke observed executing in logs.
-- Grok draft PR #3 (m2-desktop-shell) opened by advisor on charge's instruction, titled do-not-merge until M1 checkpoint. Desktop pnpm/src-tauri tests are local-only; CI has no desktop job.
+- Grok draft PR #3 (m2-desktop-shell) opened by advisor on charge's instruction, titled do-not-merge until M1 checkpoint. Desktop pnpm/src-tauri tests are local-only; CI has no desktop job (Grok tasked day 3 to add one).
+- Issue numbering collision (2026-07-18): Opus and K3 both claimed 005 in parallel sessions. Opus's 005/006 are on main and authoritative; K3's ADR-0002 review renumbers to 007; next free is 008. Root cause: both lanes read "next free is 005" from day-1 docs and worked concurrently. Watch for repeats; consider lane-prefixed reservations if it happens again.
+- ADR-0002 §4 enforcement: charge's acceptance predates K3's review (parallel work, nobody's fault). K3 proved empirically (spike k3/spike-deny-bans f9f58a6, cargo-deny 0.20.2) that [[bans.deny]] + wrappers is graph-wide and fails even on a clean tree, so issue 002's deny.toml approach is dead. Opus tasked to evaluate and amend §4 to name K3's scoped cargo-metadata check (ci/check_crypto_confinement.py); charge re-accepts the amendment; issue 002 then closes as superseded. Advisor recommendation to charge: accept, the evidence is solid. Facade design acceptance itself stands.
+- Day-3 tasking sent 2026-07-18 (prompts relayed by charge): Opus = proto key_id + proof+head wrapper PR, ADR-0002 §4 amendment, docs/protocol/auth.md. K3 = CI toolchain fix on k3/m1-ci-hardening then restack onto new main, renumber 005 to 007, ADR-0001 rev 2 re-review into issue 004, fold ADR-0003 findings A/B/C + record issue 003 ruling, hold the confinement check until the §4 ruling; told to verify gh works itself now that GH_TOKEN exists. Grok = add a path-filtered desktop CI job on a branch (no self-merge), rebase PR #3 onto new main; M2 feature work still gated.
 
 ## Open queue (verify against repo; this snapshot ages)
 
-- Three relays drafted and handed to charge 2026-07-17, delivery to K3 pending (resend from session transcript or redraft from this file): (1) ADR-0001 rev 2 re-review of F1-F4, verdict into docs/issues/004; (2) fold A/B/C into ADR-0003 + record issue 003 ruling; (3) CI toolchain fix on k3/m1-ci-hardening (dtolnay action needs explicit toolchain, or replace with a rustup run step / setup-rust-toolchain action that reads the toml), restack on new main, then confirm the three new jobs actually execute.
-- charge: merge advisor/setup; accept ADR-0001 after K3 confirm; accept ADR-0003 after fold; merge K3 stack after real green; decide gh-token tightening.
-- Opus owes (tracked, blocks no one): citadel-proto PR adding key_id to TreeHeadTbs/SignedTreeHead + ADR-0003 §5 proof+head wrapper (one coherent change, golden-byte tests); docs/protocol/auth.md pinning the two-step KT verify flow.
-- K3 also has: deny.toml crypto-confinement bans, now unblocked since the facade is on main (a k3/spike-deny-bans branch appeared 2026-07-17 based on the pre-merge opus tip; needs rebase); then auth endpoints + KT persistence per ADR-0001 rev 2 schema once ADR-0003 is accepted.
-- Grok parked at PR #3 until M1 checkpoint.
+All three agents were tasked 2026-07-18 (day 3) and are presumed working; verify outputs against the repo, per lane, when reports arrive:
+
+- K3 (critical path): CI toolchain fix commit + restack of all m1 branches onto new main; 005 renumbered to 007; then run IDs where db-tests, canary-scan, and compose-smoke show REAL execution lines (open the logs, this gates the whole K3 merge wave); issue 004 re-review confirm; ADR-0003 with A/B/C folded and issue 003 ruling recorded.
+- Opus: proto key_id + proof+head wrapper branch with updated golden-byte tests; ADR-0002 §4 amendment (goes to charge for re-acceptance); docs/protocol/auth.md.
+- Grok: desktop CI job branch, path-filtered, not self-merged; PR #3 rebased onto new main.
+- charge decisions pending: accept ADR-0001 after K3 confirms issue 004 closed; accept ADR-0003 after the fold; re-accept ADR-0002 §4 amendment (advisor recommends accept); merge K3 stack in order only after real-green verified; merge advisor/day3-sync; gh-token tightening still open (current token is broad OAuth, not the scoped PAT decided).
+- Then: K3 auth endpoints + KT persistence (gated on ADR-0003 acceptance); M1 harness AC (3 accounts x 2 devices, KT proofs end to end); Go oracle import per issue 001 (Opus fixtures, K3 CI wiring).
 - M1 exit = PLAN.md M1 ACs green end to end, including the canary scan running on every push.
 - Minor: CI branch filter lacks advisor/** (fine while advisor branches are docs-only).
 
