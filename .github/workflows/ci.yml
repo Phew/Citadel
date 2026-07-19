@@ -266,13 +266,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
 
-      # dtolnay/rust-toolchain does NOT read rust-toolchain.toml when pinned to a
-      # bare commit SHA — toolchain: is required. Keep in sync with
-      # rust-toolchain.toml (MSRV bumps need an ADR; PLAN.md §13 / A13).
-      - name: Install toolchain (match rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
-        with:
-          toolchain: "1.95.0"
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      # rustup auto-installs on the first proxied command — no dtolnay action.
+      - name: Install toolchain (rust-toolchain.toml)
+        working-directory: ${{ github.workspace }}
+        run: rustc --version
 
       - name: Cache cargo (src-tauri)
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
