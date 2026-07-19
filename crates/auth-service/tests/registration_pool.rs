@@ -360,7 +360,15 @@ async fn publish_fetch_roundtrip_and_all_or_nothing() {
     assert_eq!(err.code, ErrorCode::Forbidden);
 
     // Publish two, pool size reported in the response (ADR-0003 §4).
-    let body = serde_json::json!({ "packages": ["cGtnLTE", "cGtnLTI"] });
+    // (proto's b64 helpers are standard-WITH-padding; encode, don't
+    // hand-write — the first CI run failed here on "cGtnLTE" missing '='.)
+    let published: Vec<Vec<u8>> = vec![b"pkg-1".to_vec(), b"pkg-2".to_vec()];
+    let body = serde_json::json!({
+        "packages": published
+            .iter()
+            .map(|p| base64::engine::general_purpose::STANDARD.encode(p))
+            .collect::<Vec<_>>()
+    });
     let (status, resp): (StatusCode, PublishKeyPackagesResponse) = call(
         router.clone(),
         post(
@@ -375,7 +383,7 @@ async fn publish_fetch_roundtrip_and_all_or_nothing() {
 
     // Consuming fetch: one package per active device per call.
     let fetch_uri = format!("/v1/accounts/{}/key-packages", reg.account);
-    for want_remaining in [1, 0] {
+    for want_remaining in [1usize, 0] {
         let (status, fetched): (StatusCode, FetchKeyPackagesResponse) = call(
             router.clone(),
             Request::builder()
@@ -388,10 +396,12 @@ async fn publish_fetch_roundtrip_and_all_or_nothing() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(fetched.packages.len(), 1);
         assert_eq!(fetched.packages[0].device_id, reg.device);
+        // Oldest-first: fetches drain the published packages in order.
+        assert_eq!(fetched.packages[0].package.0, published[1 - want_remaining]);
         let remaining = auth_service::store::unconsumed_count(&pool, reg.device)
             .await
             .unwrap();
-        assert_eq!(remaining, want_remaining);
+        assert_eq!(remaining, want_remaining as u32);
     }
 
     // Empty pool for the account's only device → 409, nothing burned.
