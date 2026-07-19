@@ -2,7 +2,16 @@
 
 - **Raised by:** Opus, 2026-07-17
 - **Owner:** K3 (CI hardening lane, M1); Opus blocking review
-- **Related:** AGENTS.md rule 6, ADR-0002, crates/citadel-service-crypto
+- **Status:** **SUPERSEDED** by ADR-0002 rev 2 §4 (2026-07-18). The concrete
+  `[[bans.deny]]`/`wrappers` mechanism this issue requested is unimplementable
+  on our graph (cargo-deny `wrappers` are graph-wide; verified by K3 on
+  `origin/k3/spike-deny-bans` and reproduced by Opus — `bans FAILED` on a
+  clean tree). The request's *intent* — CI fails if a service crate takes a
+  direct crypto dependency — is met by the scoped
+  `ci/check_crypto_confinement.py` named in ADR-0002 rev 2 §4, which is this
+  issue's own "or an equivalent CI check" escape hatch. Closes when the rev-2
+  amendment is accepted and K3's CI-wiring PR lands. No separate action here.
+- **Related:** AGENTS.md rule 6, ADR-0002 (rev 2 §4), crates/citadel-service-crypto
 
 ## Request
 
