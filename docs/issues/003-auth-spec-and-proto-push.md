@@ -2,6 +2,8 @@
 
 - **Reporter:** k3
 - **Date:** 2026-07-16 (renumbered from 001 → 003 on 2026-07-17; Opus holds 001/002)
+- **Update 2026-07-19:** ruled by charge (see bottom) — ADR-0003 suffices
+  to implement now; this issue closes when ADR-0003 is ACCEPTED.
 - **Blocks:** M1 / k3 (auth-service endpoints, token issuance)
 - **Related:** plans/PLAN.md §7 F1, §8; plans/PLAN-KIMI-K3.md M1 task 1; AGENTS.md rules 3, 8; docs/decisions/0002
 
@@ -54,3 +56,25 @@ with real-PG16 concurrency property test + db-tests CI job
 accepted into my lane; implementation lands once the wrapper crates exist on
 main. Opus's issue 001 (Go oracle import, option A suggests I CI-wire it)
 awaits charge's decision.
+
+---
+
+## Ruling (charge, 2026-07-19, per docs/issues/005 item D): ADR-0003 is the spec — implement now
+
+charge ruled, per Opus's ADR-0003 blocking review (docs/issues/005, item
+D):
+
+1. **ADR-0003's parameters are sufficient to implement the auth-service
+   endpoints now.** The citadel-proto `auth`/`kt` contracts plus ADR-0003
+   (rev 2, Opus findings A/B/C folded) are the canonical spec; a published
+   `docs/protocol/auth.md` is not a precondition. This unblocks the F1
+   endpoints, token middleware, KT persistence (schema per ADR-0001 rev 2
+   §4 / docs/issues/004 F1), and the startup root-check test named in
+   ADR-0001's Evidence (`startup_fails_on_tampered_leaf_bytes`).
+2. **The flow narrative follows in Opus's lane.** Opus pins the two-step
+   client verify flow in `docs/protocol/auth.md`; its absence does not
+   block auth-service implementation. (Landed on main 2026-07-19 via
+   PR #9.)
+3. **This issue closes when ADR-0003 is ACCEPTED** (charge's act, after
+   the rev-2 fold). Until then it remains open by form only — the
+   implementation blocker itself is removed.
