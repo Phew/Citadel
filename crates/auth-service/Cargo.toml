@@ -26,7 +26,7 @@ thiserror = { workspace = true }
 base64 = { workspace = true }
 # Service state lives in PostgreSQL via sqlx (PLAN.md §4); committed
 # migrations in ./migrations are the only schema source.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate", "macros"] }
 
 [dev-dependencies]
 # Property tests (PLAN.md §10): pool exactly-once under random concurrent
