@@ -10,7 +10,7 @@
 //! may appear here even for tests.
 
 use auth_service::auth::{self, AuthError, CHALLENGE_TTL_SECS, TOKEN_TTL_SECS};
-use auth_service::server::{self, AppState};
+use auth_service::server::{self, AppState, KtState};
 use auth_service::store;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -283,7 +283,13 @@ async fn challenge_verify_endpoints_roundtrip() {
     let account = make_account(&pool).await;
     let key = TestSigner::from_seed([0x77; 32]);
     let device = make_device(&pool, account, &key.public_key()).await;
-    let app = server::router(AppState { pool: pool.clone() });
+    let app = server::router(AppState {
+        pool: pool.clone(),
+        kt: std::sync::Arc::new(KtState {
+            log: std::sync::Mutex::new(kt_log::KtLog::new()),
+            signer: kt_log::TreeHeadSigner::from_seed(&[0xA5; 32]),
+        }),
+    });
 
     let post = |path: &str, body: Vec<u8>| {
         Request::builder()

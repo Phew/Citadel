@@ -69,6 +69,11 @@ services:
       PORT: "8081"
       RUST_LOG: ${RUST_LOG:-info}
       DATABASE_URL: postgres://${POSTGRES_USER:-citadel}:${POSTGRES_PASSWORD:-citadel}@postgres:5432/${POSTGRES_DB:-citadel}
+      # M1 dev-stack KT log signing seed (ADR-0001 §3; base64 of 32 bytes,
+      # here 0x00..0x1f). Fixed so the dev stack's tree heads are stable.
+      # Production loads the seed from the service secret store, never from
+      # a committed file.
+      CITADEL_KT_LOG_SEED: ${CITADEL_KT_LOG_SEED:-AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=}
     ports:
       - "8081:8081"
     depends_on:
