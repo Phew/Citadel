@@ -29,6 +29,13 @@ pub struct RegisterAccountResponse {
     pub device_id: DeviceId,
     /// Index of this account's identity-key leaf in the KT log.
     pub kt_leaf_index: u64,
+    /// Server-assigned append timestamp stamped into this account's `KtLeaf`
+    /// (Unix seconds). The client cannot know it a priori, yet it is part of
+    /// `KtLeaf::leaf_bytes()`, so the F1 step-5 self-inclusion check needs it
+    /// to rebuild the leaf and reproduce its hash — the other leaf fields
+    /// (`account_id`, handle, `identity_pubkey`) the client already holds.
+    /// See docs/protocol/auth.md §3 step B.
+    pub kt_appended_at: i64,
     /// Tree head signed after the append; the client verifies its own
     /// inclusion proof against this before trusting registration (F1 step 5).
     pub kt_tree_head: SignedTreeHead,
