@@ -1,18 +1,16 @@
-# Advisor status — mid-day-3 sync (2026-07-18)
+# Advisor status — end of day 3 merge wave (2026-07-19)
 
-Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is only the immediate queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`, branch `advisor/day3-sync`.
+Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is only the immediate queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`, branch `advisor/day4-sync`.
 
 ## Immediate queue, in order
 
-1. All three agents tasked day 3 (prompt contents in ADVISOR-CONTEXT decision history). When reports arrive, verify against the repo, never the narration.
-2. K3 gate first: open Actions logs and confirm db-tests, canary-scan, compose-smoke show real execution lines on the fixed stack. Only then does charge merge the K3 stack in order.
-3. Opus's ADR-0002 §4 amendment goes to charge for re-acceptance; advisor recommendation is accept (K3's spike evidence is solid).
-4. ADR-0001 acceptance after K3 confirms issue 004; ADR-0003 acceptance after A/B/C fold; issue 003 closes on that acceptance.
-5. Watch the 005-to-007 renumber lands cleanly in K3's restack (collision details in ADVISOR-CONTEXT).
+1. Confirm charge sent the Grok relay (rebase PR #5 with K3's rustup toolchain pattern; strip the temp workflow commit from PR #3). Verify Grok's green run, then merge PR #5 (charge delegated merges this session; confirm delegation still stands next session).
+2. K3's next session: confinement-check wiring PR, then auth endpoints + KT persistence (ADR-0003 ACCEPTED, fully unblocked). Verify endpoint tests ship in the same PRs and canary injection points extend to new endpoints.
+3. Opus's next session: Go oracle fixtures (issue 001 option A), review of K3's confinement script.
+4. M1 exit watch: multi-client harness AC is the last M1 gate; integration checkpoint before M2 opens for Grok.
 
 ## State at this sync
 
-- main: 5ce6962 (PR #4 advisor docs, partial; PR #2 opus/m1-proto; M0).
-- PR #4 merged only advisor/setup's first two commits; the 2026-07-17 wind-down commit was cherry-picked onto advisor/day3-sync.
-- PR #3: grok/m2-desktop-shell draft, do-not-merge title, awaiting M1 checkpoint.
-- k3/m1-* branches: still CI-red at toolchain setup until K3's day-3 fix lands.
+- main f242398: all ADRs ACCEPTED (0001, 0002 incl. §4 rev 2, 0003); issues 001/002/003 closed; K3 stack merged (PRs #10-#17); acceptances PR #18; full five-job pipeline green on main (run 29673166977), canary scan now runs on every push.
+- Open PRs: #3 (M2 draft, gated), #5 (desktop CI, awaiting rebase).
+- Stale: origin/advisor/setup (delete after confirming nothing unique remains).
