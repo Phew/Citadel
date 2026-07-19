@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: every job only reads the repo.
+permissions:
+  contents: read
+
+# Superseded runs on the same ref cancel; main never cancels so its signal
+# stays complete. Keeps wall time inside the 15-minute budget (PLAN-KIMI-K3 DoD).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -14,55 +24,64 @@ jobs:
   rust:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      # Toolchain comes ONLY from rust-toolchain.toml: MSRV/toolchain moves
+      # happen by ADR (PLAN.md §13), never as a workflow side effect.
+      # rustup resolves the toml (channel + components + profile) on the
+      # first proxied command and auto-installs what is missing — no action
+      # input that can drift from the toml. (dtolnay/rust-toolchain does NOT
+      # read the toml; pinned with no toolchain input it failed every k3 job
+      # at setup on 2026-07-17.)
       - name: Install toolchain (rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
-          components: rustfmt, clippy
+        run: rustc --version
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
+      # --locked: the committed Cargo.lock is the contract; a manifest that
+      # would change it fails here instead of silently drifting.
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   audit:
     name: cargo-audit · cargo-deny
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Install toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20 # v2
         with:
-          tool: cargo-audit
+          tool: cargo-audit@0.22.2
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20 # v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.20.2
 
-      - name: Generate lockfile
-        run: cargo generate-lockfile
+      # Verify the committed lockfile is in sync with the manifests, then
+      # audit exactly what is committed (never a regenerated lockfile).
+      - name: Lockfile is committed and current
+        run: cargo fetch --locked
 
       - name: cargo audit
         run: cargo audit
@@ -73,21 +92,21 @@ jobs:
   compose-smoke:
     name: docker compose health
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: rust
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Install toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.95.0"
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Build wait-healthy
-        run: cargo build -p test-harness --bin wait-healthy
+        run: cargo build --locked -p test-harness --bin wait-healthy
 
       - name: Compose up
         run: docker compose -f deploy/docker-compose.yml up -d --build
