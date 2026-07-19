@@ -83,6 +83,15 @@ jobs:
       - name: Lockfile is committed and current
         run: cargo fetch --locked
 
+      # Service crypto confinement (AGENTS.md rule 6, ADR-0002 §4 rev 2):
+      # the four service crates declare no direct crypto-primitive
+      # dependency. cargo-deny cannot express this (graph-wide wrappers);
+      # this manifest-scoped check is the canonical mechanism. Stdlib-only
+      # Python; fails loudly if a service crate is missing, and its
+      # self-test probe must fire or the job fails.
+      - name: Crypto confinement check
+        run: python3 ci/check_crypto_confinement.py
+
       - name: cargo audit
         run: cargo audit
 
