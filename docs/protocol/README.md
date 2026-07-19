@@ -6,8 +6,9 @@ canonical for wire contracts; amend docs when they diverge).
 
 | Doc | Milestone | Owner |
 |-----|-----------|--------|
-| (registration / KT) | M1 | Opus + K3 |
+| auth.md — registration + KT verification (F1) | M1 | Opus + K3 |
 | (DM / channel MLS) | M2–M3 | Opus |
 | franking.md | M6 (write first) | Opus |
 
-M0 intentionally leaves this directory as a scaffold only.
+`auth.md` pins the client KT verification flow (F1); auth-flow operational
+parameters live in ADR-0003 and KT log design in ADR-0001.
