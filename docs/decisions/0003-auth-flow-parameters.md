@@ -1,8 +1,8 @@
 # ADR-0003: Auth-flow operational parameters (challenge-response, tokens, pool, KT proof endpoint)
 
-- **Status:** PROPOSED
+- **Status:** ACCEPTED (charge, 2026-07-19, rev 2 with Opus findings A/B/C folded; recorded by advisor). docs/issues/003 closes on this acceptance per its recorded ruling.
 - **Date:** 2026-07-17 (rev 2: 2026-07-19 — folds Opus's blocking review,
-  docs/issues/005, findings A/B/C; still PROPOSED — charge marks ACCEPTED)
+  docs/issues/005, findings A/B/C)
 - **Deciders:** charge (required for ACCEPTED); author: K3. Blocking review: Opus (auth flows are Opus's review surface).
 - **Invariants touched:** INV-2 (token/key handling), INV-9 (challenge + token randomness)
 - **Related:** plans/PLAN.md §7 F1, §8; docs/issues/003; docs/issues/004 (F1, F4); docs/issues/005 (Opus review); docs/decisions/0001, 0002; crates/citadel-proto/src/auth.rs
