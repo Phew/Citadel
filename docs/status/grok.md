@@ -1,7 +1,7 @@
 # Grok status handoff
 
 **Agent:** Grok (Grok 4.5)  
-**Updated:** 2026-07-19 (day 3 end — rebased onto K3 CI main; PR #5 green, ready to merge by charge)  
+**Updated:** 2026-07-19 (day 4 — PR #3 rebased onto main; desktop job execution proof)  
 **Audience:** a fresh Grok instance with **zero** memory of prior sessions. Read this, then `plans/PLAN.md`, `plans/AGENTS.md`, `plans/PLAN-GROK-4.5.md`.
 
 ---
@@ -24,72 +24,83 @@ You are Grok on the Citadel team (E2E encrypted Discord-style chat). Your owned 
 
 ---
 
-## Desktop CI — rebased onto K3 main; ready for charge merge
+## Day 4 work (this session)
+
+### Goal
+
+PR #5 (desktop CI job) is **merged** to `main`. The path-filtered desktop job’s final rustup form had never actually executed — every run since the fix skipped on the path filter. Day-4 task: rebase PR #3 onto current main, touch `apps/desktop/**` with one honest improvement so the desktop job runs for real, open the run log, and report execution proof.
+
+### Done
 
 | Item | Value |
 |------|--------|
-| Branch | `grok/desktop-ci` @ `b7fdeca` |
-| Base | `origin/main` @ `f242398` (K3 CI stack + advisor ADR acceptances) |
-| PR | https://github.com/Phew/Citadel/pull/5 — **do not self-merge** |
-| **Green run ID** | **`29673203093`** |
-| URL | https://github.com/Phew/Citadel/actions/runs/29673203093 |
-| Conclusion | **success** (all required jobs) |
+| Worktree | `C:\Users\charge\Documents\GitHub\Citadel\citadel-grok` |
+| Base | `origin/main` @ `33d775a` (includes PR #5 + advisor day-4 note) |
+| Branch | `grok/m2-desktop-shell` (rebased; force-pushed) |
+| PR | https://github.com/Phew/Citadel/pull/3 — **still draft**, **do not merge** |
+| Desktop improvement | Empty/whitespace body rejection tests (Rust + TS) + README CI note |
+| Desktop CI run | *(filled after push — see session report)* |
 
-### What landed on the branch (relative to main)
+**Rebase note:** Intermediate day-2/day-3 status-only commits conflicted with main’s newer `docs/status/grok.md` and were skipped; M2 shell commits kept. Fresh day-4 status written here.
 
-Appended to K3’s rewritten `.github/workflows/ci.yml`:
+### Parked again
 
-1. **`desktop-changes`** — `dorny/paths-filter` on `apps/desktop/**`, with `permissions: pull-requests: read` (needed under repo `contents: read` default).
-2. **`desktop`** — when filter true: WebKitGTK deps, pnpm 9 + Node 20, `pnpm install/test/build`, `cargo test --locked` in `src-tauri`.
-3. **Toolchain pattern (K3):** `run: rustc --version` only — rustup auto-installs from `rust-toolchain.toml`. **No** `dtolnay/rust-toolchain` (gone repo-wide).
-
-On this PR (workflow + status only) the heavy desktop job correctly **skips**. Prior proof of real execution (pnpm 12 + cargo 5) was run **`29671105141`** on a temporary PR #3 workflow carry (since dropped).
-
-### After charge merges PR #5
-
-PR #3 picks up the desktop job from main on the next push/re-run. No need to keep workflow changes on the M2 branch.
+- **No M2 feature work** until M1 multi-client harness checkpoint (charge).
+- **Do not merge** PR #3.
+- Next Grok session: confirm worktree, read this status, wait for M1 gate.
 
 ---
 
-## M2 desktop shell — still PARKED (pure M2 diff again)
+## Historical (prior days)
+
+### Desktop CI job — MERGED (day 3 / PR #5)
 
 | Item | Value |
 |------|--------|
-| Branch | `grok/m2-desktop-shell` @ `38efe58` |
-| Base | `origin/main` @ `f242398` |
-| PR | https://github.com/Phew/Citadel/pull/3 (draft) — **DO NOT MERGE until M1 checkpoint** |
-| Workflow carry | **Dropped** — no `.github/workflows/ci.yml` delta vs main |
-| Feature work | **None.** M2 feature gate unchanged. |
+| PR | https://github.com/Phew/Citadel/pull/5 |
+| Merge | `fb13d9b` on main |
+| Final form | `rustc --version` (rust-toolchain.toml via rustup); path filter + `pull-requests: read`; pnpm + cargo test |
 
-Shell: Tauri 2 + React mock, honesty rules intact. See `apps/desktop/README.md`.
+### M2 desktop shell — still PARKED (PR #3)
+
+Still draft. Contents unchanged in intent:
+
+1. Tauri 2 + React + TypeScript + Tailwind under `apps/desktop/`.
+2. Honest mock defaults: empty inbox, `backend=unavailable`, `session=null`, `encryptionStatus=unavailable`.
+3. Transport: webview → `tauri-invoke`; browser → `in-process-mock`.
+4. Rust mock store + ACL; standalone `[workspace]` in `src-tauri` (not root workspace).
+
+### How to run / verify
 
 ```bash
-cd apps/desktop && pnpm install && pnpm test && pnpm build
-cd src-tauri && cargo test
+cd apps/desktop
+pnpm install
+pnpm test
+pnpm build
+pnpm dev               # browser → in-process-mock
+pnpm tauri:dev         # webview → tauri-invoke (still mock)
+cd src-tauri && cargo test --locked
 ```
 
----
+### Honesty rules (do not regress)
 
-## Branch / hash report
-
-| Ref | Hash | Notes |
-|-----|------|--------|
-| `origin/main` | `f242398` | K3 CI rewritten; ADR acceptances |
-| `grok/desktop-ci` / PR #5 | `b7fdeca` | Desktop job; green run `29673203093` |
-| `grok/m2-desktop-shell` / PR #3 | `38efe58` | Pure M2; rebased; no workflow carry |
+- Never green “encrypted” / verified-user chrome on mock data.
+- Never imply backend availability.
+- Never invent real accounts; fixtures stay labeled.
+- No direct REST/WS from React to services.
 
 ---
 
-## Carry-forward
+## Carry-forward for next Grok session
 
-1. Worktree: `citadel-grok` only.
-2. **No M2 feature work** until M1 multi-client harness checkpoint.
-3. After PR #5 merges: optional re-run on PR #3 to show desktop job green from main’s workflow.
-4. MSRV stays in `rust-toolchain.toml`; CI never hardcodes channel via dtolnay.
-5. Remaining M1 (not Grok): K3 auth endpoints + KT persistence, confinement-check wiring, Go oracle import, multi-client harness AC.
+1. Confirm worktree: `git rev-parse --show-toplevel` → must be `citadel-grok`.
+2. **No M2 feature work** until M1 checkpoint (charge). Gate still holds.
+3. PR #3 stays draft; charge merges after M1.
+4. Desktop CI job on main is the contract for `apps/desktop/**` changes.
+5. MSRV **1.95.0**; bumps need ADR.
 
 ---
 
-## Stop condition
+## Stop condition for this handoff’s author
 
-Both rebases done; PR #5 green on run **29673203093**; PR #3 pure M2; **not** self-merged; **stopped.**
+PR #3 rebased onto main; desktop path touched so desktop job executes; run log opened and execution proof reported; **parked — no M2 features, no merges.**

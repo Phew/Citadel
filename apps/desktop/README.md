@@ -65,9 +65,22 @@ pnpm dev
 # Unit tests (mock honesty + empty defaults)
 pnpm test
 
+# Typecheck + production bundle (CI also runs this)
+pnpm build
+
 # Full Tauri window (native)
 pnpm tauri:dev
+
+# Rust mock store tests (CI also runs this under src-tauri)
+cd src-tauri && cargo test --locked
 ```
+
+## CI
+
+Path-filtered job on `main` (`.github/workflows/ci.yml`): changes under
+`apps/desktop/**` run `pnpm install --frozen-lockfile`, `pnpm test`,
+`pnpm build`, and `cargo test --locked` in `src-tauri`. Rust-only pushes skip
+the job.
 
 ## M2 scope (Grok slice)
 

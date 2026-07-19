@@ -68,6 +68,20 @@ describe("mock citadel-core (honest empty / disconnected)", () => {
     ).rejects.toThrow(/No conversation/i);
   });
 
+  it("rejects mock send with empty or whitespace-only body", async () => {
+    const core = createMockCitadelCore();
+    const { conversations } = await core.loadMockFixtures();
+    const groupId = conversations[0].groupId;
+
+    await expect(core.sendMockLocalMessage(groupId, "   ")).rejects.toThrow(
+      /empty/i,
+    );
+
+    const { messages } = await core.listMessages(groupId);
+    // Fixture seed message only — composer must not append a blank row.
+    expect(messages).toHaveLength(1);
+  });
+
   it("clearMockFixtures returns to empty disconnected state", async () => {
     const core = createMockCitadelCore();
     await core.loadMockFixtures();

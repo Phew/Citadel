@@ -297,6 +297,21 @@ mod tests {
     }
 
     #[test]
+    fn mock_local_send_rejects_empty_or_whitespace_body() {
+        let mut store = MockStore::new();
+        load_mock_fixtures(&mut store);
+        let err = send_mock_local(&mut store, "mock-group-fixture-1", "   ")
+            .expect_err("whitespace-only body must be rejected");
+        assert!(
+            err.to_lowercase().contains("empty"),
+            "error should mention empty body, got: {err}"
+        );
+        // Nothing appended to the fixture thread.
+        let msgs = list_messages(&store, "mock-group-fixture-1");
+        assert_eq!(msgs.messages.len(), 1);
+    }
+
+    #[test]
     fn clear_returns_empty() {
         let mut store = MockStore::new();
         load_mock_fixtures(&mut store);
