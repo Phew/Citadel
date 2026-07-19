@@ -22,7 +22,7 @@ pub mod tree;
 
 use citadel_proto::credential::Signature;
 use citadel_proto::kt::{
-    ConsistencyProof, InclusionProof, KtHash, KtLeaf, SignedTreeHead, TreeHeadTbs,
+    ConsistencyProof, InclusionProof, KeyId, KtHash, KtLeaf, SignedTreeHead, TreeHeadTbs,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use tree::Hash;
@@ -171,9 +171,19 @@ impl TreeHeadSigner {
         self.key.verifying_key().to_bytes()
     }
 
+    /// This key's `KeyId` = `SHA-256(public_key)` (ADR-0001 §5, RFC 6962
+    /// LogID). Stamped into every head this signer produces, and the value a
+    /// client derives from its pinned anchor to match against `tbs.key_id`.
+    /// SHA-256 comes from the crypto facade (no primitive dep in kt-log's
+    /// hashing path beyond tree-node hashing).
+    pub fn key_id(&self) -> KeyId {
+        KeyId(key_id_of(&self.public_key()))
+    }
+
     /// Sign a tree head for `log` at its current size.
     pub fn sign_head(&self, log: &KtLog, timestamp: i64) -> SignedTreeHead {
         let tbs = TreeHeadTbs {
+            key_id: self.key_id(),
             tree_size: log.size(),
             root_hash: KtHash(log.root()),
             timestamp,
@@ -186,10 +196,24 @@ impl TreeHeadSigner {
     }
 }
 
+/// `KeyId` bytes for an Ed25519 public key: `SHA-256(public_key)` via the
+/// crypto facade (ADR-0001 §5).
+pub fn key_id_of(public_key: &[u8; 32]) -> [u8; 32] {
+    citadel_service_crypto::sha256(public_key)
+}
+
 // ---------- Client-side verification (pure; used by citadel-core and tests) ----------
 
-/// Verify an STH signature against a pinned log public key.
+/// Verify an STH against a pinned log public key. Two-part check per
+/// ADR-0001 §5: the head's `key_id` must name this anchor
+/// (`SHA-256(log_public_key)`), *and* the signature must verify under it.
+/// The `key_id` gate lets a client with an anchor *set* pick the right key
+/// up front, and rejects a head aimed at some other anchor before the
+/// signature check even runs.
 pub fn verify_tree_head(sth: &SignedTreeHead, log_public_key: &[u8; 32]) -> bool {
+    if sth.tbs.key_id.0 != key_id_of(log_public_key) {
+        return false;
+    }
     citadel_service_crypto::verify(log_public_key, &sth.tbs.signing_input(), &sth.signature.0)
         .is_ok()
 }
@@ -315,6 +339,31 @@ mod tests {
         let rebuilt = KtLog::from_leaf_bytes(bytes.iter().map(Vec::as_slice));
         assert_eq!(rebuilt.root(), log.root());
         assert_eq!(rebuilt.size(), log.size());
+    }
+
+    #[test]
+    fn sign_head_stamps_key_id_of_public_key() {
+        let mut log = KtLog::new();
+        let s = signer();
+        log.append(&leaf(1));
+        let sth = s.sign_head(&log, 1);
+        // The head carries SHA-256(public_key), and it verifies.
+        assert_eq!(sth.tbs.key_id, s.key_id());
+        assert_eq!(sth.tbs.key_id.0, key_id_of(&s.public_key()));
+        assert!(verify_tree_head(&sth, &s.public_key()));
+    }
+
+    #[test]
+    fn verify_rejects_key_id_that_names_another_anchor() {
+        let mut log = KtLog::new();
+        let s = signer();
+        log.append(&leaf(1));
+        let mut sth = s.sign_head(&log, 1);
+        // Corrupt only the key_id so it no longer names this anchor: rejected
+        // at the key_id gate (the signature would also fail, but the gate
+        // fires first — a client with the wrong pinned key stops here).
+        sth.tbs.key_id.0[0] ^= 0xFF;
+        assert!(!verify_tree_head(&sth, &s.public_key()));
     }
 
     #[test]
