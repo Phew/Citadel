@@ -39,7 +39,8 @@ PR #5 (desktop CI job) is **merged** to `main`. The path-filtered desktop job’
 | Branch | `grok/m2-desktop-shell` (rebased; force-pushed) |
 | PR | https://github.com/Phew/Citadel/pull/3 — **still draft**, **do not merge** |
 | Desktop improvement | Empty/whitespace body rejection tests (Rust + TS) + README CI note |
-| Desktop CI run | *(filled after push — see session report)* |
+| Desktop CI run (proof) | **29704933798** (push) — job `desktop · pnpm · cargo test` **88240219215** success |
+| Also | PR run **29704934769** green; full workflow success including canary/compose |
 
 **Rebase note:** Intermediate day-2/day-3 status-only commits conflicted with main’s newer `docs/status/grok.md` and were skipped; M2 shell commits kept. Fresh day-4 status written here.
 
