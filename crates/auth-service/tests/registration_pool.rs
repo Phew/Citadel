@@ -41,9 +41,33 @@ fn db_url() -> String {
     )
 }
 
+/// Connect and migrate in a per-test schema. Registration appends to the
+/// GLOBALLY sequenced kt_leaves (leaf index = seq - 1, ADR-0001 §4), so a
+/// test must own its sequence — see kt_persistence.rs for the failure this
+/// prevents. Isolation is a fresh schema per case, never TRUNCATE.
 async fn fresh_pool() -> PgPool {
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&db_url())
+        .await
+        .expect("connect to real PostgreSQL (CI provisions it)");
+    let schema = format!("t_{}", AccountId::new().as_uuid().simple());
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin)
+        .await
+        .expect("create per-test schema");
+
     let pool = PgPoolOptions::new()
-        .max_connections(16)
+        .max_connections(8)
+        .after_connect(move |conn, _meta| {
+            let schema = schema.clone();
+            Box::pin(async move {
+                sqlx::query(&format!("SET search_path TO \"{schema}\""))
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
