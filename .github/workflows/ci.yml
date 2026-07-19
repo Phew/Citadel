@@ -1,10 +1,19 @@
 name: ci
 
+# Minutes discipline (charge, 2026-07-19): one run per push, not two.
+# pull_request is the canonical CI trigger for agent branches — open a
+# draft PR early to get CI; a branch push with no open PR runs nothing.
+# push triggers only on main (post-merge verification). Docs-only changes
+# skip the whole workflow: they cannot affect any job's verdict, and the
+# canary-on-every-push M1 exit requirement concerns code reaching main,
+# which still runs on every PR and every main push.
 on:
   push:
-    branches: [main, "grok/**", "opus/**", "k3/**"]
+    branches: [main]
+    paths-ignore: ["docs/**", "plans/**", "**.md"]
   pull_request:
     branches: [main]
+    paths-ignore: ["docs/**", "plans/**", "**.md"]
 
 # Least privilege: every job only reads the repo.
 permissions:
