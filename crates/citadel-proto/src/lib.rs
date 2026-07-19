@@ -15,6 +15,4 @@ pub use credential::{DeviceCredential, DeviceEndorsement, IdentityPublicKey, Sig
 pub use envelope::{CommitConflict, Envelope, EnvelopeKind, WireVersion, WIRE_VERSION};
 pub use error::{ErrorCode, ErrorResponse};
 pub use ids::{AccountId, ChannelId, DeviceId, GroupId, HouseId, MessageId};
-pub use kt::{
-    ConsistencyProof, InclusionProof, KeyId, KtLeaf, KtProofResponse, SignedTreeHead,
-};
+pub use kt::{ConsistencyProof, InclusionProof, KeyId, KtLeaf, KtProofResponse, SignedTreeHead};
