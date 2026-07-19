@@ -1,7 +1,7 @@
 # Grok status handoff
 
 **Agent:** Grok (Grok 4.5)  
-**Updated:** 2026-07-19 (day 3 cont. — desktop CI defect fixed + job proven)  
+**Updated:** 2026-07-19 (day 3 end — rebased onto K3 CI main; PR #5 green, ready to merge by charge)  
 **Audience:** a fresh Grok instance with **zero** memory of prior sessions. Read this, then `plans/PLAN.md`, `plans/AGENTS.md`, `plans/PLAN-GROK-4.5.md`.
 
 ---
@@ -24,102 +24,72 @@ You are Grok on the Citadel team (E2E encrypted Discord-style chat). Your owned 
 
 ---
 
-## Day 3 (cont.) — desktop CI defect fix + proof
-
-### Defect (advisor / charge relay)
-
-`dtolnay/rust-toolchain` pinned to a bare commit SHA does **not** read `rust-toolchain.toml`. With no `toolchain:` input the job fails at setup (`toolchain is a required input`). Same class of bug currently breaks K3’s six `k3/m1-*` branches. Earlier claim that the job used “toolchain from rust-toolchain.toml” was **wrong and untested** (path filter had always skipped the job on PR #5).
-
-### Fix on `grok/desktop-ci` (PR #5)
+## Desktop CI — rebased onto K3 main; ready for charge merge
 
 | Item | Value |
 |------|--------|
-| Branch | `grok/desktop-ci` @ `80fceb5` |
-| Base | `origin/main` @ `ac43a3a` (includes advisor PR #6 day-3 sync) |
-| PR | https://github.com/Phew/Citadel/pull/5 — **open, no self-merge** |
+| Branch | `grok/desktop-ci` @ `b7fdeca` |
+| Base | `origin/main` @ `f242398` (K3 CI stack + advisor ADR acceptances) |
+| PR | https://github.com/Phew/Citadel/pull/5 — **do not self-merge** |
+| **Green run ID** | **`29673203093`** |
+| URL | https://github.com/Phew/Citadel/actions/runs/29673203093 |
+| Conclusion | **success** (all required jobs) |
 
-**Changes vs first desktop-ci commit:**
+### What landed on the branch (relative to main)
 
-1. **`toolchain: "1.95.0"`** on the desktop job’s rust-toolchain step, with comment: keep in sync with `rust-toolchain.toml` (MSRV bumps need ADR).
-2. **`permissions: pull-requests: read`** on `desktop-changes` so `dorny/paths-filter` can list PR files (without it: `Resource not accessible by integration`).
-3. Path filter still `apps/desktop/**` only; pure `ci.yml` PRs correctly skip the heavy job.
+Appended to K3’s rewritten `.github/workflows/ci.yml`:
 
-### Proof of real execution (not skip / not green-empty)
+1. **`desktop-changes`** — `dorny/paths-filter` on `apps/desktop/**`, with `permissions: pull-requests: read` (needed under repo `contents: read` default).
+2. **`desktop`** — when filter true: WebKitGTK deps, pnpm 9 + Node 20, `pnpm install/test/build`, `cargo test --locked` in `src-tauri`.
+3. **Toolchain pattern (K3):** `run: rustc --version` only — rustup auto-installs from `rust-toolchain.toml`. **No** `dtolnay/rust-toolchain` (gone repo-wide).
 
-PR #5 alone only touches `ci.yml` → path filter still skips desktop there (expected). To **execute** the job, fixed workflow was temporarily carried onto PR #3 (`grok/m2-desktop-shell`, which has the real `apps/desktop` tree) and force-pushed.
+On this PR (workflow + status only) the heavy desktop job correctly **skips**. Prior proof of real execution (pnpm 12 + cargo 5) was run **`29671105141`** on a temporary PR #3 workflow carry (since dropped).
 
-| Item | Value |
-|------|--------|
-| Prove vehicle | PR #3 push/PR run |
-| **Run ID** | **`29671105141`** |
-| URL | https://github.com/Phew/Citadel/actions/runs/29671105141 |
-| Head SHA | `83fa529` |
-| Conclusion | **success** (full workflow) |
-| Desktop job | **`desktop · pnpm · cargo test`** job id `88150112778`, **4m6s**, success |
+### After charge merges PR #5
 
-**Log evidence (job 88150112778):**
-
-- Toolchain: `rustup toolchain install 1.95.0` → `rustc 1.95.0 (59807616e 2026-04-14)`
-- `pnpm test` → `Test Files  2 passed (2)` / `Tests  12 passed (12)`
-- `pnpm build` → success
-- `cargo test --locked` → `running 5 tests` / `test result: ok. 5 passed; 0 failed`
-
-### Sequencing note (K3 still working)
-
-K3’s CI hardening stack still rewrites `ci.yml` and has **not** landed on `main` yet. After it merges:
-
-1. `git fetch`; rebase `grok/desktop-ci` onto new `main`.
-2. Resolve `ci.yml` conflict; keep desktop job + `toolchain: "1.95.0"` + path-filter permissions (or adopt K3’s corrected pattern if it supersedes).
-3. Drop the temporary workflow carry from PR #3 when #5 is on main (rebase m2 onto main only).
-4. Re-prove if the merge conflict resolution is non-trivial.
-
-Do **not** self-merge PR #5.
+PR #3 picks up the desktop job from main on the next push/re-run. No need to keep workflow changes on the M2 branch.
 
 ---
 
-## M2 desktop shell — still PARKED
+## M2 desktop shell — still PARKED (pure M2 diff again)
 
 | Item | Value |
 |------|--------|
-| Branch | `grok/m2-desktop-shell` @ `83fa529` (includes temp CI carry for proof) |
+| Branch | `grok/m2-desktop-shell` @ `38efe58` |
+| Base | `origin/main` @ `f242398` |
 | PR | https://github.com/Phew/Citadel/pull/3 (draft) — **DO NOT MERGE until M1 checkpoint** |
-| Feature work | **None.** Gate still holds. |
+| Workflow carry | **Dropped** — no `.github/workflows/ci.yml` delta vs main |
+| Feature work | **None.** M2 feature gate unchanged. |
 
-Shell contents unchanged (Tauri 2 + React mock shell, honesty rules intact). See prior handoff sections / `apps/desktop/README.md`.
-
-### How to run / verify locally
+Shell: Tauri 2 + React mock, honesty rules intact. See `apps/desktop/README.md`.
 
 ```bash
-cd apps/desktop
-pnpm install
-pnpm test
-pnpm build
+cd apps/desktop && pnpm install && pnpm test && pnpm build
 cd src-tauri && cargo test
 ```
 
 ---
 
-## Branch / hash report (end of this session)
+## Branch / hash report
 
 | Ref | Hash | Notes |
 |-----|------|--------|
-| `origin/main` | `ac43a3a` | PR #2, #4, #6; **no** K3 CI hardening yet |
-| `grok/desktop-ci` / PR #5 | `80fceb5` | Fixed toolchain + path-filter perms; awaiting charge |
-| `grok/m2-desktop-shell` / PR #3 | `83fa529` | M2 shell + temp workflow carry for proof |
-| Proven Actions run | `29671105141` | desktop job real pass |
+| `origin/main` | `f242398` | K3 CI rewritten; ADR acceptances |
+| `grok/desktop-ci` / PR #5 | `b7fdeca` | Desktop job; green run `29673203093` |
+| `grok/m2-desktop-shell` / PR #3 | `38efe58` | Pure M2; rebased; no workflow carry |
 
 ---
 
 ## Carry-forward
 
-1. Worktree only: `citadel-grok`. Confirm with `git rev-parse --show-toplevel`.
-2. **No M2 feature work** until M1 checkpoint.
-3. When K3 CI lands: rebase `grok/desktop-ci`, resolve `ci.yml`, re-verify.
-4. After PR #5 merges: rebase PR #3 onto main (workflow comes from base; drop temp carry if still present).
-5. MSRV **1.95.0**; `dtolnay/rust-toolchain` at a pinned SHA **always** needs explicit `toolchain:` input.
+1. Worktree: `citadel-grok` only.
+2. **No M2 feature work** until M1 multi-client harness checkpoint.
+3. After PR #5 merges: optional re-run on PR #3 to show desktop job green from main’s workflow.
+4. MSRV stays in `rust-toolchain.toml`; CI never hardcodes channel via dtolnay.
+5. Remaining M1 (not Grok): K3 auth endpoints + KT persistence, confinement-check wiring, Go oracle import, multi-client harness AC.
 
 ---
 
 ## Stop condition
 
-Toolchain defect fixed on PR #5; desktop job proven with real pnpm + cargo output on run **29671105141**; status updated; **stopped.** K3 rebase still pending their merge.
+Both rebases done; PR #5 green on run **29673203093**; PR #3 pure M2; **not** self-merged; **stopped.**
