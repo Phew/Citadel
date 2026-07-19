@@ -1,6 +1,11 @@
-# cargo-deny configuration for Citadel CI.
-# Crypto confinement (AGENTS.md rule 6) is tightened in M1 when
-# citadel-service-crypto lands; this file is the M0 skeleton.
+# cargo-deny configuration for Citadel CI (ADR-0002 §4 rev 2).
+# Scope: advisories (RUSTSEC), license policy, multiple-versions hygiene,
+# plus whole-graph bans for crates nothing in the workspace may ever link
+# (graph-wide semantics are the desired behaviour there, not a bug).
+# cargo-deny is NOT the mechanism for the service crypto-confinement rule
+# (AGENTS.md rule 6): [[bans.deny]] wrappers are graph-wide and cannot
+# express "no direct dependency from a service crate" — that rule is
+# enforced by ci/check_crypto_confinement.py, whose blocklist is canonical.
 
 [graph]
 all-features = false
@@ -35,7 +40,15 @@ confidence-threshold = 0.8
 multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
-deny = []
+# Whole-graph bans (ADR-0002 §4 rev 2): crates NOTHING in the workspace may
+# ever link, where graph-wide semantics are the point. TLS is rustls-only;
+# the native-TLS/openssl stack must never enter the graph. The service
+# crypto-confinement blocklist does NOT live here — see
+# ci/check_crypto_confinement.py.
+deny = [
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+]
 
 [sources]
 unknown-registry = "deny"
