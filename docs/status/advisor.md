@@ -4,7 +4,7 @@ Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; thi
 
 ## Immediate queue, in order
 
-1. Confirm charge sent the Grok relay (rebase PR #5 with K3's rustup toolchain pattern; strip the temp workflow commit from PR #3). Verify Grok's green run, then merge PR #5 (charge delegated merges this session; confirm delegation still stands next session).
+1. DONE 2026-07-19: Grok rebased PR #5 (rustup pattern) and cleaned PR #3 (zero .github delta, verified by diff); advisor verified and merged PR #5. OPEN VERIFICATION ITEM: the desktop job's final rustup form has never executed (skipped on workflow-only diffs; a PR #3 close/reopen did not retrigger CI). It proves itself automatically on the next push touching apps/desktop/**, which must happen before any M2 merge. Check the log for real pnpm/cargo execution then, do not accept a skip as proof.
 2. K3's next session: confinement-check wiring PR, then auth endpoints + KT persistence (ADR-0003 ACCEPTED, fully unblocked). Verify endpoint tests ship in the same PRs and canary injection points extend to new endpoints.
 3. Opus's next session: Go oracle fixtures (issue 001 option A), review of K3's confinement script.
 4. M1 exit watch: multi-client harness AC is the last M1 gate; integration checkpoint before M2 opens for Grok.
