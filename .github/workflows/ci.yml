@@ -204,3 +204,88 @@ jobs:
       - name: Compose down
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
+
+  # Path gate only — skips the heavy Node/Tauri job on Rust-only pushes.
+  # pull-requests: read is required for dorny/paths-filter on pull_request
+  # (lists changed files via the API; contents:read alone → "Resource not accessible").
+  desktop-changes:
+    name: desktop path filter
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Path filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            desktop:
+              - 'apps/desktop/**'
+
+  desktop:
+    name: desktop · pnpm · cargo test
+    needs: desktop-changes
+    if: needs.desktop-changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Tauri links WebKitGTK; unit tests still compile the native crate graph.
+      - name: Install system deps (WebKitGTK)
+        working-directory: ${{ github.workspace }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      # rustup auto-installs on the first proxied command — no dtolnay action.
+      - name: Install toolchain (rust-toolchain.toml)
+        working-directory: ${{ github.workspace }}
+        run: rustc --version
+
+      - name: Cache cargo (src-tauri)
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm test
+        run: pnpm test
+
+      - name: pnpm build
+        run: pnpm build
+
+      - name: cargo test (src-tauri)
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked
