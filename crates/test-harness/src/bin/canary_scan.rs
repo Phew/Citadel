@@ -214,13 +214,44 @@ fn injection_points(endpoints: &StackEndpoints) -> Vec<(String, Probe)> {
         "auth-service POST /v1/devices/<nil>/key-packages (101-package batch, rejected)"
             .to_string(),
         Probe::PostJson {
-            base: auth,
+            base: auth.clone(),
             path: "/v1/devices/00000000-0000-0000-0000-000000000000/key-packages",
             body: |canary| {
                 let pkg = base64::engine::general_purpose::STANDARD.encode(canary);
                 // 101 > ADR-0003 §4's 100-package cap: rejected before the
                 // store layer, so the canary bytes may never reach a table.
                 serde_json::json!({ "packages": vec![pkg; 101] })
+            },
+        },
+    ));
+    points.push((
+        "auth-service POST /v1/devices (endorsement signature, unauthenticated)".to_string(),
+        Probe::PostJson {
+            base: auth,
+            path: "/v1/devices",
+            body: |canary| {
+                let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+                // Canary rides the endorsement signature field (padded to
+                // the 64-byte shape). Enrollment is authenticated
+                // (ADR-0004 §1), so with no bearer token this is rejected
+                // before any storage — a scan hit means rejected bytes
+                // were persisted.
+                let mut sig = [0u8; 64];
+                sig[..canary.len()].copy_from_slice(canary.as_bytes());
+                serde_json::json!({
+                    "credential": {
+                        "account_id": uuid::Uuid::nil(),
+                        "device_id": uuid::Uuid::nil(),
+                        "identity_pubkey": b64(&[0u8; 32]),
+                        "device_pubkey": b64(&[0u8; 32]),
+                        "issued_at": 0,
+                        "signature": b64(&[0u8; 64]),
+                    },
+                    "endorsement": {
+                        "endorsing_device_id": uuid::Uuid::nil(),
+                        "signature": b64(&sig),
+                    },
+                })
             },
         },
     ));
@@ -424,8 +455,8 @@ mod tests {
         let points = injection_points(&endpoints());
         assert_eq!(
             points.len(),
-            11,
-            "4 services x 2 probes (body, header) + 3 auth-service endpoint probes"
+            12,
+            "4 services x 2 probes (body, header) + 4 auth-service endpoint probes"
         );
         let mut names: Vec<&str> = points.iter().map(|(n, _)| n.as_str()).collect();
         names.sort_unstable();
@@ -464,6 +495,7 @@ mod tests {
                         | "/health"
                         | "/v1/accounts"
                         | "/v1/auth/verify"
+                        | "/v1/devices"
                         | "/v1/devices/00000000-0000-0000-0000-000000000000/key-packages"
                 ),
                 "{name}: unexpected path {path}; new injection points extend this test"
@@ -485,7 +517,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies.len(), 4);
         for body in &bodies {
             if let Some(handle) = body.get("handle") {
                 assert!(

@@ -2,10 +2,8 @@
 //! running compose stack in the CI `compose-smoke` job.
 //!
 //! Covers, end to end against live HTTP + PostgreSQL:
-//! - registration of 3 accounts with their first device each (the AC's
-//!   "3 accounts, 2 devices each" — the second-device step slots in with
-//!   ADR-0004 device enrollment; every step below already iterates all
-//!   devices of the account);
+//! - registration of 3 accounts and enrollment of a second device per
+//!   account (ADR-0004) — the AC's "3 accounts, 2 devices each";
 //! - the F1 step-5 self-check (docs/protocol/auth.md §3 step B): rebuild
 //!   the client's own `KtLeaf` from its registration fields +
 //!   `kt_appended_at` (issue 008), fetch the atomic proof+head pair, and
@@ -23,12 +21,14 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use citadel_proto::auth::{
-    challenge_signing_input, ChallengeRequest, ChallengeResponse, FetchKeyPackagesResponse,
-    PublishKeyPackagesRequest, PublishKeyPackagesResponse, RegisterAccountRequest,
-    RegisterAccountResponse, VerifyRequest, VerifyResponse,
+    challenge_signing_input, ChallengeRequest, ChallengeResponse, EnrollDeviceRequest,
+    EnrollDeviceResponse, FetchKeyPackagesResponse, PublishKeyPackagesRequest,
+    PublishKeyPackagesResponse, RegisterAccountRequest, RegisterAccountResponse, VerifyRequest,
+    VerifyResponse,
 };
 use citadel_proto::credential::{
-    DeviceCredential, DeviceCredentialTbs, DevicePublicKey, IdentityPublicKey, Signature,
+    endorsement_signing_input, DeviceCredential, DeviceCredentialTbs, DeviceEndorsement,
+    DevicePublicKey, IdentityPublicKey, Signature,
 };
 use citadel_proto::error::ErrorCode;
 use citadel_proto::ids::{AccountId, DeviceId};
@@ -63,6 +63,7 @@ struct AcDevice {
 
 struct AcAccount {
     account_id: AccountId,
+    identity: TestSigner,
     kt_leaf_index: u64,
     registration_head: SignedTreeHead,
     devices: Vec<AcDevice>,
@@ -135,6 +136,7 @@ async fn register_account(
 
     AcAccount {
         account_id: resp.account_id,
+        identity,
         kt_leaf_index: resp.kt_leaf_index,
         registration_head: sth,
         devices: vec![AcDevice {
@@ -142,6 +144,42 @@ async fn register_account(
             key: first_device_key,
             token: String::new(),
         }],
+    }
+}
+
+/// Enroll a second device (ADR-0004): identity-signed credential plus the
+/// first device's endorsement over the exact credential bytes, authorized
+/// by the first device's bearer token.
+async fn enroll_device(client: &TestClient, account: &AcAccount, new_key: TestSigner) -> AcDevice {
+    let first = &account.devices[0];
+    let tbs = DeviceCredentialTbs {
+        account_id: account.account_id,
+        device_id: DeviceId::new(),
+        identity_pubkey: IdentityPublicKey(account.identity.public_key()),
+        device_pubkey: DevicePublicKey(new_key.public_key()),
+        issued_at: now_epoch(),
+    };
+    let signature = Signature(account.identity.sign(&tbs.signing_input()));
+    let credential = DeviceCredential { tbs, signature };
+    let endorsement = DeviceEndorsement {
+        endorsing_device_id: first.device_id,
+        signature: Signature(first.key.sign(&endorsement_signing_input(&credential))),
+    };
+    let resp: EnrollDeviceResponse = client
+        .post_json_bearer(
+            "/v1/devices",
+            &first.token,
+            &EnrollDeviceRequest {
+                credential,
+                endorsement,
+            },
+        )
+        .await
+        .expect("second-device enrollment must succeed (ADR-0004)");
+    AcDevice {
+        device_id: resp.device_id,
+        key: new_key,
+        token: String::new(),
     }
 }
 
@@ -178,12 +216,14 @@ async fn m1_ac_registers_accounts_and_verifies_kt() {
     let client = TestClient::new(http, endpoints.auth.clone());
     let anchor = log_anchor();
 
-    // ---- Register 3 accounts (first device each) with the F1 self-check.
+    // ---- Register 3 accounts with the F1 self-check, then enroll the
+    // second device per account (ADR-0004) — the AC's "3 accounts, 2
+    // devices each".
     let mut accounts = Vec::new();
     for i in 0..3u8 {
         let identity = TestSigner::from_seed([0xA0 + i; 32]);
         let first_device_key = TestSigner::from_seed([0xB0 + i; 32]);
-        let account = register_account(
+        let mut account = register_account(
             &client,
             &anchor,
             &format!("ac-user-{i}"),
@@ -192,15 +232,17 @@ async fn m1_ac_registers_accounts_and_verifies_kt() {
         )
         .await;
 
-        // ADR-0004 slot (device enrollment, POST /v1/devices): enroll the
-        // second device per account HERE and push it into account.devices.
-        // Token issuance, publish, and fetch below already iterate every
-        // device, so the AC's "2 devices each" completes with that one step.
-        assert_eq!(
-            account.devices.len(),
-            1,
-            "first device from registration; second device slots in with ADR-0004"
-        );
+        // The first device authenticates first: enrollment requires its
+        // bearer token (ADR-0004 §1).
+        account.devices[0].token = authenticate(
+            &client,
+            account.devices[0].device_id,
+            &account.devices[0].key,
+        )
+        .await;
+        let second = enroll_device(&client, &account, TestSigner::from_seed([0xC0 + i; 32])).await;
+        account.devices.push(second);
+        assert_eq!(account.devices.len(), 2, "M1 AC: 2 devices per account");
 
         accounts.push(account);
     }
@@ -210,11 +252,18 @@ async fn m1_ac_registers_accounts_and_verifies_kt() {
         assert!(w[0].kt_leaf_index < w[1].kt_leaf_index);
     }
 
-    // ---- Every device authenticates and publishes to its pool.
-    for account in &mut accounts {
-        for device in &mut account.devices {
-            device.token = authenticate(&client, device.device_id, &device.key).await;
-            let packages = [b"ac-pkg-1".to_vec(), b"ac-pkg-2".to_vec()];
+    // ---- Every device authenticates (first devices already hold a token
+    // from enrollment) and publishes to its pool. Package bytes are unique
+    // per device so the fetch below can assert the exact drain set.
+    for (ai, account) in accounts.iter_mut().enumerate() {
+        for (di, device) in account.devices.iter_mut().enumerate() {
+            if device.token.is_empty() {
+                device.token = authenticate(&client, device.device_id, &device.key).await;
+            }
+            let packages = [
+                format!("ac-pkg-a{ai}-d{di}-1").into_bytes(),
+                format!("ac-pkg-a{ai}-d{di}-2").into_bytes(),
+            ];
             let resp: PublishKeyPackagesResponse = client
                 .post_json_bearer(
                     &format!("/v1/devices/{}/key-packages", device.device_id),
@@ -233,12 +282,12 @@ async fn m1_ac_registers_accounts_and_verifies_kt() {
     }
 
     // ---- Consuming cross-account fetch (F2 shape): account 1's device
-    // fetches account 0's packages, one per active device per call (oldest
-    // first), until the pool reports key_package_unavailable.
+    // fetches account 0's packages — one package per ACTIVE device per
+    // call, all-or-nothing (ADR-0003 §4). Two devices × two packages means
+    // exactly two rounds drain the account, then key_package_unavailable.
     let fetcher = &accounts[1].devices[0];
     let target = accounts[0].account_id;
-    let target_device = accounts[0].devices[0].device_id;
-    for want_bytes in [b"ac-pkg-1".to_vec(), b"ac-pkg-2".to_vec()] {
+    for round in 1..=2u8 {
         let fetched: FetchKeyPackagesResponse = client
             .get_json_bearer(
                 &format!("/v1/accounts/{target}/key-packages"),
@@ -246,9 +295,19 @@ async fn m1_ac_registers_accounts_and_verifies_kt() {
             )
             .await
             .expect("consuming fetch must succeed while the pool is stocked");
-        assert_eq!(fetched.packages.len(), 1);
-        assert_eq!(fetched.packages[0].device_id, target_device);
-        assert_eq!(fetched.packages[0].package.0, want_bytes);
+        assert_eq!(fetched.packages.len(), 2, "one package per active device");
+        let got: std::collections::HashSet<(DeviceId, Vec<u8>)> = fetched
+            .packages
+            .iter()
+            .map(|p| (p.device_id, p.package.0.clone()))
+            .collect();
+        let want: std::collections::HashSet<(DeviceId, Vec<u8>)> = accounts[0]
+            .devices
+            .iter()
+            .enumerate()
+            .map(|(di, d)| (d.device_id, format!("ac-pkg-a0-d{di}-{round}").into_bytes()))
+            .collect();
+        assert_eq!(got, want, "round {round} must drain exactly one per device");
     }
     let (status, err) = client
         .get_json_bearer_expect_error(
