@@ -11,9 +11,10 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use citadel_proto::auth::{
-    ChallengeRequest, ChallengeResponse, DeviceKeyPackage, FetchKeyPackagesResponse,
-    KeyPackageBytes, PublishKeyPackagesRequest, PublishKeyPackagesResponse, RegisterAccountRequest,
-    RegisterAccountResponse, VerifyRequest, VerifyResponse,
+    ChallengeRequest, ChallengeResponse, DeviceKeyPackage, EnrollDeviceRequest,
+    EnrollDeviceResponse, FetchKeyPackagesResponse, KeyPackageBytes, PublishKeyPackagesRequest,
+    PublishKeyPackagesResponse, RegisterAccountRequest, RegisterAccountResponse, VerifyRequest,
+    VerifyResponse,
 };
 use citadel_proto::error::{ErrorCode, ErrorResponse};
 use citadel_proto::ids::{AccountId, DeviceId};
@@ -26,6 +27,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::accounts::{self, RegisterError};
 use crate::auth::{self, AuthError};
+use crate::enroll::{self, EnrollError};
 use crate::kt_store::{self, KtStoreError};
 use crate::store::{self, StoreError};
 
@@ -48,6 +50,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/challenge", post(auth_challenge))
         .route("/v1/auth/verify", post(auth_verify))
         .route("/v1/accounts", post(register))
+        .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}/key-packages", post(publish_key_packages))
         .route("/v1/accounts/{id}/key-packages", get(fetch_key_packages))
         .route("/v1/kt/tree-head", get(kt_tree_head))
@@ -165,6 +168,32 @@ async fn register(
         .await
         .map(Json)
         .map_err(register_error)
+}
+
+fn enroll_error(err: EnrollError) -> ApiError {
+    match err {
+        EnrollError::Unauthorized => error_response(ErrorCode::Unauthorized, "unauthorized"),
+        EnrollError::Forbidden(msg) => error_response(ErrorCode::Forbidden, msg),
+        EnrollError::Conflict => error_response(ErrorCode::Conflict, "device id already enrolled"),
+        EnrollError::Database(e) => {
+            tracing::error!(error = %e, "enrollment store error");
+            error_response(ErrorCode::Internal, "internal error")
+        }
+    }
+}
+
+/// `POST /v1/devices` — authenticated device enrollment (ADR-0004): the
+/// bearer token's device must also be the endorsing device.
+async fn enroll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<EnrollDeviceRequest>,
+) -> Result<Json<EnrollDeviceResponse>, ApiError> {
+    let token_device = bearer_device(&state, &headers).await?;
+    enroll::enroll_device(&state.pool, token_device, &req)
+        .await
+        .map(Json)
+        .map_err(enroll_error)
 }
 
 /// `POST /v1/devices/{id}/key-packages` — replenish the caller's pool.
