@@ -1,6 +1,6 @@
 # ADR-0004: Device enrollment parameters (POST /v1/devices)
 
-- **Status:** PROPOSED
+- **Status:** ACCEPTED (charge, 2026-07-19, as proposed; recorded by advisor). The device-transparency residual gap named in §"KT log" is deferred beyond M1 by this acceptance and tracked on the deferred-by-design list.
 - **Date:** 2026-07-19
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3.
 - **Invariants touched:** INV-2 (services hold no user keys), INV-4 (clients
