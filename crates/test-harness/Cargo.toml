@@ -36,6 +36,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # client, which legitimately owns crypto (INV-2; ADR-0002 §4 rev 2 scope
 # note — the confinement check covers only the four service crates).
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# Client-side KT verification in the M1 acceptance test (INV-4: clients
+# verify everything — the harness proves it against the live stack).
+kt-log = { workspace = true }
 
 [dev-dependencies]
 citadel-service-crypto = { workspace = true }

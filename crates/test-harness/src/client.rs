@@ -63,9 +63,34 @@ impl TestClient {
         decode_success(resp).await
     }
 
+    /// POST a JSON body with a bearer token (ADR-0003 §2).
+    pub async fn post_json_bearer<Req: Serialize, Resp: DeserializeOwned>(
+        &self,
+        path: &str,
+        token: &str,
+        body: &Req,
+    ) -> Result<Resp, ServiceError> {
+        let resp = self
+            .send(self.http.post(self.url(path)).bearer_auth(token).json(body))
+            .await?;
+        decode_success(resp).await
+    }
+
     /// GET a JSON resource, decoding a 2xx response into `Resp`.
     pub async fn get_json<Resp: DeserializeOwned>(&self, path: &str) -> Result<Resp, ServiceError> {
         let resp = self.send(self.http.get(self.url(path))).await?;
+        decode_success(resp).await
+    }
+
+    /// GET a JSON resource with a bearer token (ADR-0003 §2).
+    pub async fn get_json_bearer<Resp: DeserializeOwned>(
+        &self,
+        path: &str,
+        token: &str,
+    ) -> Result<Resp, ServiceError> {
+        let resp = self
+            .send(self.http.get(self.url(path)).bearer_auth(token))
+            .await?;
         decode_success(resp).await
     }
 
@@ -77,6 +102,19 @@ impl TestClient {
         body: &Req,
     ) -> Result<(StatusCode, ErrorResponse), ServiceError> {
         let resp = self.send(self.http.post(self.url(path)).json(body)).await?;
+        decode_rejection(resp).await
+    }
+
+    /// GET expecting rejection, with a bearer token (negative paths on
+    /// authenticated endpoints).
+    pub async fn get_json_bearer_expect_error(
+        &self,
+        path: &str,
+        token: &str,
+    ) -> Result<(StatusCode, ErrorResponse), ServiceError> {
+        let resp = self
+            .send(self.http.get(self.url(path)).bearer_auth(token))
+            .await?;
         decode_rejection(resp).await
     }
 
