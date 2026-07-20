@@ -1,16 +1,17 @@
-# Advisor status — end of day 3 merge wave (2026-07-19)
+# Advisor status — end of day 4 (2026-07-20, M1 exit AC merged)
 
-Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is only the immediate queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`, branch `advisor/day4-sync`.
+Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is only the immediate queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`, branch `advisor/day4-close`.
 
 ## Immediate queue, in order
 
-1. DONE 2026-07-19: Grok rebased PR #5 (rustup pattern) and cleaned PR #3 (zero .github delta, verified by diff); advisor verified and merged PR #5. OPEN VERIFICATION ITEM: the desktop job's final rustup form has never executed (skipped on workflow-only diffs; a PR #3 close/reopen did not retrigger CI). It proves itself automatically on the next push touching apps/desktop/**, which must happen before any M2 merge. Check the log for real pnpm/cargo execution then, do not accept a skip as proof.
-2. K3's next session: confinement-check wiring PR, then auth endpoints + KT persistence (ADR-0003 ACCEPTED, fully unblocked). Verify endpoint tests ship in the same PRs and canary injection points extend to new endpoints.
-3. Opus's next session: Go oracle fixtures (issue 001 option A), review of K3's confinement script.
-4. M1 exit watch: multi-client harness AC is the last M1 gate; integration checkpoint before M2 opens for Grok.
+1. FIRST ACTION: verify the M1 exit evidence run, run 29713459939 on main @ d2768c8 (in_progress at shutdown). Open the compose-smoke log and confirm `m1_ac_registers_accounts_and_verifies_kt ... ok` executed ON MAIN. The same tree was green on PR #33's run 29712827217, so risk is low, but the exit criterion is the main run, not the PR run.
+2. If green: recommend charge declare the M1 checkpoint complete and open M2 for Grok (rebase PR #3, begin encrypted DMs + desktop shell). Draft day-5 kickoff prompts.
+3. Standing agent rules to enforce in relays: base every PR on main (never stacked branches, auto-close trap), open draft PRs early for CI (push runs only fire on main since PR #26), docs-only diffs run no CI by design, rule 13 = no AI attribution signatures.
+4. charge open calls to surface when relevant: LICENSE file (public repo, currently all rights reserved), stale origin/advisor/setup deletion, gh-token tightening, trademark check.
 
 ## State at this sync
 
-- main f242398: all ADRs ACCEPTED (0001, 0002 incl. §4 rev 2, 0003); issues 001/002/003 closed; K3 stack merged (PRs #10-#17); acceptances PR #18; full five-job pipeline green on main (run 29673166977), canary scan now runs on every push.
-- Open PRs: #3 (M2 draft, gated), #5 (desktop CI, awaiting rebase).
-- Stale: origin/advisor/setup (delete after confirming nothing unique remains).
+- main d2768c8: M1 build surface complete. ADR-0001/0002/0003/0004 all ACCEPTED; issues 001-008 closed/recorded. Auth stack, KT persistence (key_id), registration+pool, device enrollment, 3x2 harness AC, confinement check, Go oracle fixtures, canary (12 probes) all merged and log-verified.
+- Repo is PUBLIC (charge, 2026-07-19, after an Actions billing cutoff). CI minutes unlimited. Trigger discipline per PR #26.
+- Open PRs: #3 only (M2 desktop shell, draft, eligible after the M1 checkpoint).
+- Merged this day: #21-#33 except #3 (see ADVISOR-CONTEXT day-4 outcome for order and hashes).
