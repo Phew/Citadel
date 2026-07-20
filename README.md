@@ -123,14 +123,16 @@ plans/                    architecture plan + team process
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | Scaffolding, CI, compose stack | ✅ done |
-| M1 | Identity, device enrollment, key transparency | 🔨 in progress |
-| M2 | Encrypted DMs + desktop shell | ⏳ next |
+| M1 | Identity, device enrollment, key transparency | ✅ done |
+| M2 | Encrypted DMs + desktop shell | 🔨 next up |
 | M3 | Channels + deterministic commit ordering | planned |
 | M4 | Houses, signed roles, moderation | planned |
 | M5 | Multi-device sync, encrypted attachments | planned |
 | M6 | Message franking + reports | planned |
 | M7 | E2E encrypted voice (DAVE pattern) | planned |
 | M8 | Hardening, rate limiting, UX polish | planned |
+
+**M1 closed 2026-07-20.** Its exit acceptance test runs in CI on every push: 3 accounts × 2 devices registered and enrolled through the live stack, key packages published and consumed exactly-once, and each client verifying its own KT inclusion proof against the signed tree head. Identity, challenge-response auth, hashed bearer tokens with cascade revocation, device enrollment, and the transparency log are all on main with their evidence tests.
 
 Deliberately out of scope for v1: federation, mobile, account recovery, sealed sender. Each returns via ADR when its time comes ([`plans/PLAN.md` §12](plans/PLAN.md)).
 
