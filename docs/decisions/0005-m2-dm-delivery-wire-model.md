@@ -1,6 +1,6 @@
 # ADR-0005: M2 DM delivery + wire model (F2 Welcome, F4 send/receive)
 
-- **Status:** PROPOSED (author: Opus; design review: K3; charge is sole approver). Build (delivery-service transport, citadel-core MLS path) does not start until charge accepts.
+- **Status:** ACCEPTED (charge, 2026-07-21, as proposed; recorded by Opus). All five open decisions confirmed as proposed. K3's independent design review runs in parallel; #36 merges once that review is in and green. Build (delivery-service transport, citadel-core MLS path) starts only on merge.
 - **Date:** 2026-07-20
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3.
 - **Invariants touched:** INV-1 (no plaintext server-side; canary extends to delivery tables), INV-2 (keys never leave the client; local store key in OS keychain), INV-3 (server proposes, never decides), INV-4 (clients validate every welcome/commit/credential), INV-6 (deterministic commit ordering — *reserved* here, enforced in M3), INV-8 (franking, not scanning — scoping call below), INV-9 (local DB key + idempotency randomness from the OS CSPRNG), INV-10 (no crypto primitives from scratch — padding + SQLite-at-rest scoping calls below)
@@ -342,21 +342,21 @@ surface); citadel-core MLS/padding/store tests Opus; adversarial suite Opus
   minimum), plus `adversarial_ds_replayed_welcome_rejected` and
   `adversarial_ds_forged_commit_rejected`.
 
-## Open decisions for charge
+## Decisions ruled by charge (all confirmed as proposed, 2026-07-21)
 
-1. **Franking scope (§3, primary).** Confirm franking is scoped **out** of the M2
+1. **Franking scope (§3, primary).** Confirmed: franking is scoped **out** of the M2
    delivery path (no wire field, no server countersignature; F4 M2 test has zero
-   franking; citadel-core keeps a nullable `frank_tag` for M6). Recommendation:
-   yes — the alternative reverses the M6-first ordering and creates the silent
-   dependency the trap warns about.
-2. **Padding as application framing (§3).** Confirm the `{256,1024,4096,16384}`
+   franking; citadel-core keeps a nullable `frank_tag` for M6). The F4 franking
+   tag/countersignature are M6; M2 is "F4 minus franking," and the M2 AC does not
+   depend on it.
+2. **Padding as application framing (§3).** Confirmed: the `{256,1024,4096,16384}`
    bucket set, the `u32-BE len || content || zero-pad` layout, pad-then-encrypt in
-   citadel-core, and reject-over-16KB (attachments = M5). This is the reading of
-   INV-10 that makes bucket padding legal (framing, not a primitive) — confirm it.
-3. **Cursor = raw seq, not an opaque blob (§1).** Confirm. Cheapest correct choice
+   citadel-core, and reject-over-16KB (attachments = M5). This is the only reading
+   of INV-10 consistent with F4 mandating buckets (framing, not a primitive).
+3. **Cursor = raw seq, not an opaque blob (§1).** Confirmed. Cheapest correct choice
    at M2; opaque cursor deferred to if/when delivery is sharded (post-v1).
-4. **Sends over REST only, gateway is receive/subscribe (§1).** Confirm the single
+4. **Sends over REST only, gateway is receive/subscribe (§1).** Confirmed: a single
    write path (no message-send frame on the gateway).
-5. **Subscription authorization = spam-hygiene, not confidentiality (§1).** Confirm
-   that over-fanout of ciphertext to a non-member is acceptable (INV-1), so the
-   gateway's subscribe check is metadata-only and never the security boundary.
+5. **Subscription authorization = spam-hygiene, not confidentiality (§1).** Confirmed:
+   over-fanout of ciphertext to a non-member is acceptable (INV-1), so the gateway's
+   subscribe check is metadata-only and never the security boundary.
