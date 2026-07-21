@@ -325,6 +325,12 @@ surface); citadel-core MLS/padding/store tests Opus; adversarial suite Opus
 - **`submit_is_idempotent_and_seq_monotonic`** — replaying a submit with the same
   `idempotency_key` returns the same `seq` and inserts exactly one row; concurrent
   submits to one group receive gap-free monotonic seq (db-test + proptest).
+- **`subscribe_rejects_non_addressee`** — a device with no delivery metadata in
+  group G (no Welcome addressed to it in `welcome_deliveries`, never a sender in
+  `group_messages` for G) sends `GatewayClientFrame::Subscribe{[G]}` and receives
+  an `Error` frame and no fanout for G; an addressee/sender device receives
+  `Subscribed` + live fanout. Pins the §1 subscription spam-hygiene check as a
+  named test so it cannot silently regress to no-check.
 - **`no_plaintext_scan_delivery_tables`** — canary injected through the F4 send
   path; the CI canary-scan finds zero hits in `group_messages.payload_bytes`,
   `welcome_deliveries`, and delivery-service logs (extends the M1 canary AC to M2
