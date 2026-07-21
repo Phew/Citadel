@@ -2,11 +2,11 @@
 
 **Stack:** Tauri 2 + React + TypeScript + Tailwind  
 **Owner:** Grok (see `plans/PLAN-GROK-4.5.md`)  
-**Milestone:** M2 prep (shell against **mocked** citadel-core)
+**Milestone:** M2 (shell against **mocked** citadel-core; real-core wiring is a follow-up)
 
 ## Honest mock boundary
 
-This app is deliberately runnable **before** real citadel-core / M1 services land.
+This app is deliberately runnable **before** real citadel-core DM support lands.
 
 | Claim | Mock behavior |
 |-------|----------------|
@@ -85,12 +85,13 @@ the job.
 ## M2 scope (Grok slice)
 
 - [x] App chrome, conversation list, message view, composer
-- [x] Mocked citadel-core with clear labeling
+- [x] Mocked citadel-core with clear labeling (persistent mock banner)
 - [x] Tauri command scaffold for real core later
 - [x] React → Tauri `invoke` when inside webview (still mock-backed)
-- [ ] Merge to main only after M1 multi-client harness checkpoint (charge)
+- [x] Path-filtered desktop CI (`pnpm` + `cargo test` in `src-tauri`)
+- [ ] Wire Tauri commands to **real** citadel-core once Opus lands DM support (follow-up PR; not this one)
 
-## M3 handoff
+## Real-core handoff (follow-up PR)
 
 1. Keep `getCitadelCore()` / invoke names; replace Rust mock bodies with citadel-core.
 2. Delete or gate mock fixtures behind a dev-only flag.
