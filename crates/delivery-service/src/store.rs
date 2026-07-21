@@ -46,6 +46,11 @@ pub enum StoreError {
     /// Maps to ErrorCode::Unauthorized (401).
     #[error("unauthorized")]
     Unauthorized,
+    /// Wire version this build does not speak; maps to
+    /// ErrorCode::UnsupportedVersion (INV-5: reject, never silently
+    /// downgrade).
+    #[error("unsupported wire version {found}; this build speaks {supported}")]
+    UnsupportedVersion { found: u16, supported: u16 },
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -125,11 +130,11 @@ pub async fn submit_message(
         ));
     }
     if !env.version_supported() {
-        // INV-5: reject, never silently downgrade.
-        return Err(StoreError::InvalidRequest(format!(
-            "unsupported wire version {}; this build speaks {WIRE_VERSION}",
-            env.version
-        )));
+        // INV-5: reject with the taxonomy's own code, never downgrade.
+        return Err(StoreError::UnsupportedVersion {
+            found: env.version,
+            supported: WIRE_VERSION,
+        });
     }
     let epoch = env.epoch.ok_or_else(|| {
         // group_messages.epoch is NOT NULL, and ADR-0005 §1 pins the client

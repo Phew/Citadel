@@ -88,6 +88,9 @@ fn store_error(err: StoreError) -> ApiError {
         StoreError::InvalidRequest(msg) => error_response(ErrorCode::InvalidRequest, &msg),
         StoreError::Forbidden(msg) => error_response(ErrorCode::Forbidden, &msg),
         StoreError::Unauthorized => error_response(ErrorCode::Unauthorized, "unauthorized"),
+        StoreError::UnsupportedVersion { .. } => {
+            error_response(ErrorCode::UnsupportedVersion, &err.to_string())
+        }
         StoreError::Db(e) => {
             tracing::error!(error = %e, "message store error");
             error_response(ErrorCode::Internal, "internal error")
@@ -151,7 +154,10 @@ async fn fetch_messages(
     Query(q): Query<AfterQuery>,
 ) -> Result<Json<MessagesPage>, ApiError> {
     bearer_device(&state, &headers).await?;
-    let page = store::fetch_messages(&state.pool, gid, q.after.unwrap_or(0) as i64)
+    // Clamp instead of `as i64`: a huge `after` must page to empty, not wrap
+    // negative and dump the whole group.
+    let after = i64::try_from(q.after.unwrap_or(0)).unwrap_or(i64::MAX);
+    let page = store::fetch_messages(&state.pool, gid, after)
         .await
         .map_err(store_error)?;
     Ok(Json(page))
