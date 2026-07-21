@@ -143,7 +143,9 @@ jobs:
 
   # Database-backed tests against REAL PostgreSQL 16 (PLAN.md §13: CI
   # provisions the infrastructure; missing infra fails, never skips).
-  # Runs the ignored DB tests: KeyPackage pool exactly-once property test.
+  # Runs the ignored DB tests: KeyPackage pool exactly-once property test,
+  # M2 delivery store (idempotency/seq, participant authz, pagination,
+  # welcome delivery).
   db-tests:
     name: database-backed tests (PostgreSQL 16)
     runs-on: ubuntu-latest
@@ -176,8 +178,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
+      # auth-service (M1 pool/KT) + delivery-service (M2 message path) db
+      # tests share one database; both migrators run with ignore_missing.
       - name: Run DB-backed tests
-        run: cargo test --locked -p auth-service -- --include-ignored
+        run: cargo test --locked -p auth-service -p delivery-service -- --include-ignored
 
   # M1 exit requirement (PLAN.md §13): harness injects canary plaintext
   # through client paths, then every server table and log stream is scanned
