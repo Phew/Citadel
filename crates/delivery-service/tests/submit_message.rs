@@ -86,11 +86,12 @@ async fn found_group(pool: &PgPool, founder: DeviceId, recipients: Vec<DeviceId>
 }
 
 async fn message_count(pool: &PgPool, gid: GroupId) -> i64 {
-    let row = sqlx::query("SELECT count(*)::bigint AS n FROM group_messages WHERE mls_group_id = $1")
-        .bind(gid.as_uuid())
-        .fetch_one(pool)
-        .await
-        .expect("count group_messages");
+    let row =
+        sqlx::query("SELECT count(*)::bigint AS n FROM group_messages WHERE mls_group_id = $1")
+            .bind(gid.as_uuid())
+            .fetch_one(pool)
+            .await
+            .expect("count group_messages");
     row.get("n")
 }
 

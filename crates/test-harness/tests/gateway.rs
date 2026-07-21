@@ -122,7 +122,10 @@ async fn gateway_connect(base_http: &str, token: &str) -> Ws {
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
-        .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
+        .header(
+            "Sec-WebSocket-Key",
+            tungstenite::handshake::client::generate_key(),
+        )
         .body(())
         .expect("build upgrade request");
     let stream = tokio::net::TcpStream::connect(&host)

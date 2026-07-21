@@ -353,8 +353,7 @@ fn envelope_from_row(row: &sqlx::postgres::PgRow, gid: GroupId) -> Envelope {
     }
 }
 
-const MESSAGE_COLUMNS: &str =
-    "id, mls_group_id, seq, epoch, kind, sender_device_id, payload_bytes";
+const MESSAGE_COLUMNS: &str = "id, mls_group_id, seq, epoch, kind, sender_device_id, payload_bytes";
 
 /// One page of ciphertext sync (ADR-0005 §1): rows with `seq > after`
 /// ascending, at most MESSAGES_PAGE_LIMIT (500). We fetch one extra row to
