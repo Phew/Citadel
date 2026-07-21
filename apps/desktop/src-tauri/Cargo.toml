@@ -1,0 +1,30 @@
+# Standalone package (not a root workspace member) so service CI does not
+# require WebView2 / Tauri native deps. Built via `pnpm tauri:dev` from apps/desktop.
+[workspace]
+
+[package]
+name = "citadel-desktop"
+version = "0.1.0"
+description = "Citadel desktop shell (Tauri 2). M2 runs against a mocked core API surface."
+authors = ["Citadel contributors"]
+edition = "2021"
+rust-version = "1.95.0"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "citadel_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,7 +1,7 @@
 # Grok status handoff
 
 **Agent:** Grok (Grok 4.5)  
-**Updated:** 2026-07-19 (day 3 end — rebased onto K3 CI main; PR #5 green, ready to merge by charge)  
+**Updated:** 2026-07-20 (M1 closed; M2 open — shell PR #3 rebased and unparked)  
 **Audience:** a fresh Grok instance with **zero** memory of prior sessions. Read this, then `plans/PLAN.md`, `plans/AGENTS.md`, `plans/PLAN-GROK-4.5.md`.
 
 ---
@@ -20,76 +20,83 @@ You are Grok on the Citadel team (E2E encrypted Discord-style chat). Your owned 
 **Branch prefix:** `grok/<task>`  
 **Worktree:** `…/Citadel/citadel-grok` only. Primary checkout (`…/Citadel/Citadel`) belongs to **charge**. Do not edit primary.
 
-**Process hard rules:** AGENTS.md especially (1) own worktree only, (2) commit early, (8) escalate don’t improvise, (10) PR descriptions state milestone / invariants / named tests. Charge alone merges to `main` and accepts ADRs. **CI workflow changes do not self-merge.**
+**Process hard rules:** AGENTS.md especially (1) own worktree only, (2) commit early, (8) escalate don’t improvise, (10) PR descriptions state milestone / invariants / named tests, (13) **no AI attribution signatures**. Charge alone merges to `main` and accepts ADRs. **CI workflow changes do not self-merge.**
 
 ---
 
-## Desktop CI — rebased onto K3 main; ready for charge merge
+## Current work — M2 desktop shell (PR #3), unparked
 
 | Item | Value |
 |------|--------|
-| Branch | `grok/desktop-ci` @ `b7fdeca` |
-| Base | `origin/main` @ `f242398` (K3 CI stack + advisor ADR acceptances) |
-| PR | https://github.com/Phew/Citadel/pull/5 — **do not self-merge** |
-| **Green run ID** | **`29673203093`** |
-| URL | https://github.com/Phew/Citadel/actions/runs/29673203093 |
-| Conclusion | **success** (all required jobs) |
+| Branch | `grok/m2-desktop-shell` |
+| Base | `origin/main` @ `08070d4` (M1 closed; README M2 next) |
+| PR | https://github.com/Phew/Citadel/pull/3 |
+| Scope | `apps/desktop/**` + `docs/status/grok.md` only — **no `crates/`** |
+| Mode | Mock-backed shell; real citadel-core wiring is a **follow-up PR** (waits on Opus Task 2 / DM core) |
+| Merge | Charge merges; shell is mock-only and invariant-surface-free — eligible on its own once green |
 
-### What landed on the branch (relative to main)
+### What the shell is
 
-Appended to K3’s rewritten `.github/workflows/ci.yml`:
+1. Tauri 2 + React + TypeScript + Tailwind under `apps/desktop/`.
+2. Honest mock defaults: empty inbox, `backend=unavailable`, `session=null`, `encryptionStatus=unavailable`.
+3. Persistent non-dismissible mock banner + footer transport label.
+4. Transport: webview → `tauri-invoke` (Rust mock); browser → `in-process-mock` (TS mock).
+5. Command scaffold: `core_get_status`, `core_list_*`, `core_send_mock_local`, fixtures; `core_send_message` hard-rejects.
+6. Standalone `[workspace]` in `src-tauri` (not root workspace).
+7. Empty/whitespace mock-send rejection tests (Rust + vitest).
 
-1. **`desktop-changes`** — `dorny/paths-filter` on `apps/desktop/**`, with `permissions: pull-requests: read` (needed under repo `contents: read` default).
-2. **`desktop`** — when filter true: WebKitGTK deps, pnpm 9 + Node 20, `pnpm install/test/build`, `cargo test --locked` in `src-tauri`.
-3. **Toolchain pattern (K3):** `run: rustc --version` only — rustup auto-installs from `rust-toolchain.toml`. **No** `dtolnay/rust-toolchain` (gone repo-wide).
+### Local verify (this session)
 
-On this PR (workflow + status only) the heavy desktop job correctly **skips**. Prior proof of real execution (pnpm 12 + cargo 5) was run **`29671105141`** on a temporary PR #3 workflow carry (since dropped).
+```text
+pnpm test   → 13 passed
+pnpm build  → ok
+cargo test --locked (src-tauri) → 6 passed
+```
 
-### After charge merges PR #5
+### Honesty rules (do not regress)
 
-PR #3 picks up the desktop job from main on the next push/re-run. No need to keep workflow changes on the M2 branch.
+- Never green “encrypted” / verified-user chrome on mock data.
+- Never imply backend availability.
+- Never invent real accounts; fixtures stay labeled.
+- No direct REST/WS from React to services.
+- Do not wire real citadel-core in this PR.
 
----
-
-## M2 desktop shell — still PARKED (pure M2 diff again)
-
-| Item | Value |
-|------|--------|
-| Branch | `grok/m2-desktop-shell` @ `38efe58` |
-| Base | `origin/main` @ `f242398` |
-| PR | https://github.com/Phew/Citadel/pull/3 (draft) — **DO NOT MERGE until M1 checkpoint** |
-| Workflow carry | **Dropped** — no `.github/workflows/ci.yml` delta vs main |
-| Feature work | **None.** M2 feature gate unchanged. |
-
-Shell: Tauri 2 + React mock, honesty rules intact. See `apps/desktop/README.md`.
+### How to run
 
 ```bash
-cd apps/desktop && pnpm install && pnpm test && pnpm build
-cd src-tauri && cargo test
+cd apps/desktop
+pnpm install
+pnpm test
+pnpm build
+pnpm dev               # browser → in-process-mock
+pnpm tauri:dev         # webview → tauri-invoke (still mock)
+cd src-tauri && cargo test --locked
 ```
 
 ---
 
-## Branch / hash report
+## Historical
 
-| Ref | Hash | Notes |
-|-----|------|--------|
-| `origin/main` | `f242398` | K3 CI rewritten; ADR acceptances |
-| `grok/desktop-ci` / PR #5 | `b7fdeca` | Desktop job; green run `29673203093` |
-| `grok/m2-desktop-shell` / PR #3 | `38efe58` | Pure M2; rebased; no workflow carry |
+### Desktop CI job — MERGED (PR #5)
 
----
+| Item | Value |
+|------|--------|
+| PR | https://github.com/Phew/Citadel/pull/5 |
+| Merge | `fb13d9b` on main |
+| Final form | path filter + `rustc --version` + pnpm install/test/build + cargo test in `src-tauri` |
+| Execution proof on shell path | run **29704933798** (day 4; desktop job 88240219215) |
 
-## Carry-forward
+### Day 4 (parked era)
 
-1. Worktree: `citadel-grok` only.
-2. **No M2 feature work** until M1 multi-client harness checkpoint.
-3. After PR #5 merges: optional re-run on PR #3 to show desktop job green from main’s workflow.
-4. MSRV stays in `rust-toolchain.toml`; CI never hardcodes channel via dtolnay.
-5. Remaining M1 (not Grok): K3 auth endpoints + KT persistence, confinement-check wiring, Go oracle import, multi-client harness AC.
+Rebased onto main @ `33d775a`, empty-body tests, desktop job execution proof, then parked pending M1 checkpoint. Superseded by this unpark.
 
 ---
 
-## Stop condition
+## Carry-forward for next Grok session
 
-Both rebases done; PR #5 green on run **29673203093**; PR #3 pure M2; **not** self-merged; **stopped.**
+1. Confirm worktree: `git rev-parse --show-toplevel` → must be `citadel-grok`.
+2. After charge merges PR #3: wait for Opus DM core (Task 2) before a **follow-up** PR that swaps mock command bodies to real citadel-core.
+3. Do not touch `crates/` from the desktop shell lane unless charge reassigns.
+4. Desktop CI contract: path filter on `apps/desktop/**` must stay green.
+5. MSRV **1.95.0**; bumps need ADR.
+6. No AI attribution (AGENTS.md rule 13).

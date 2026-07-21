@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Default capabilities for the Citadel mock shell",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "allow-core-get-status",
+    "allow-core-list-conversations",
+    "allow-core-list-messages",
+    "allow-core-send-mock-local",
+    "allow-core-load-mock-fixtures",
+    "allow-core-clear-mock-fixtures",
+    "allow-core-send-message"
+  ]
+}
