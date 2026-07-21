@@ -42,3 +42,9 @@ kt-log = { workspace = true }
 
 [dev-dependencies]
 citadel-service-crypto = { workspace = true }
+# WS client for the M2 gateway stack tests. Plain ws:// on the compose
+# stack (TLS termination is a deploy concern, M8); "handshake" only, so no
+# TLS backend enters the graph (deny.toml bans native-tls/openssl) and the
+# version stays lockstep with axum 0.8's ws support.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+futures-util = "0.3"
