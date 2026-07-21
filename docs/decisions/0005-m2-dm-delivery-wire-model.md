@@ -1,6 +1,6 @@
 # ADR-0005: M2 DM delivery + wire model (F2 Welcome, F4 send/receive)
 
-- **Status:** ACCEPTED (charge, 2026-07-21, as proposed; recorded by Opus). All five open decisions confirmed as proposed. K3's independent design review runs in parallel; #36 merges once that review is in and green. Build (delivery-service transport, citadel-core MLS path) starts only on merge.
+- **Status:** ACCEPTED (charge, 2026-07-21, as proposed; recorded by Opus). All five open decisions confirmed as proposed. K3's independent design review = approve, with two non-blocking gaps folded as **Amendment 1** below (charge, 2026-07-21; doc-only, the proto contracts are final and unchanged). Build (delivery-service transport, citadel-core MLS path) starts only on merge.
 - **Date:** 2026-07-20
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3.
 - **Invariants touched:** INV-1 (no plaintext server-side; canary extends to delivery tables), INV-2 (keys never leave the client; local store key in OS keychain), INV-3 (server proposes, never decides), INV-4 (clients validate every welcome/commit/credential), INV-6 (deterministic commit ordering — *reserved* here, enforced in M3), INV-8 (franking, not scanning — scoping call below), INV-9 (local DB key + idempotency randomness from the OS CSPRNG), INV-10 (no crypto primitives from scratch — padding + SQLite-at-rest scoping calls below)
@@ -331,6 +331,12 @@ surface); citadel-core MLS/padding/store tests Opus; adversarial suite Opus
   an `Error` frame and no fanout for G; an addressee/sender device receives
   `Subscribed` + live fanout. Pins the §1 subscription spam-hygiene check as a
   named test so it cannot silently regress to no-check.
+- **`submit_rejects_non_participant`** — a device that is neither the group's
+  founder nor a welcomed participant (not the `sender_device_id` of any
+  `group_messages` row in G, not a `recipient_device_id` in `welcome_deliveries`
+  for G) `POST`s to G and receives `403`; no row is inserted and no fanout occurs.
+  Pins the Amendment 1 submit-authorization check (participant-in-G on the write
+  path) so it cannot silently regress.
 - **`no_plaintext_scan_delivery_tables`** — canary injected through the F4 send
   path; the CI canary-scan finds zero hits in `group_messages.payload_bytes`,
   `welcome_deliveries`, and delivery-service logs (extends the M1 canary AC to M2
@@ -366,3 +372,49 @@ surface); citadel-core MLS/padding/store tests Opus; adversarial suite Opus
 5. **Subscription authorization = spam-hygiene, not confidentiality (§1).** Confirmed:
    over-fanout of ciphertext to a non-member is acceptable (INV-1), so the gateway's
    subscribe check is metadata-only and never the security boundary.
+
+## Amendment 1 (charge, 2026-07-21): groups-row lifecycle + submit authorization
+
+K3's design review approved the ADR and named two non-blocking gaps. Both are
+folded here as accepted additions. They are **doc-only**: the
+`citadel-proto::delivery` contracts and all five ruled decisions stand unchanged;
+this pins server-side behavior the wire types already permit.
+
+**A. `groups`-row lifecycle (fills §2).** The `groups` row is created lazily on
+the first submit to a new `gid`, inside the submit transaction, **before** seq
+assignment:
+
+```sql
+INSERT INTO groups (mls_group_id, dm) VALUES ($gid, true)
+  ON CONFLICT (mls_group_id) DO NOTHING;
+```
+
+For a DM the first submit is the Welcome (§1 F2), so the initiator materializes
+the group. `ON CONFLICT DO NOTHING` makes concurrent first-submits and idempotent
+retries safe; the row exists before `next_seq` is read, so seq assignment (§2)
+always has its serialization point.
+
+**B. Submit authorization (de-circularizes decision #5; extends §1).**
+`POST /v1/groups/{gid}/messages` requires the authenticated sender be a
+**participant in G** per delivery metadata — the same predicate #5 uses for
+subscribe, now applied to the write path. A device `D` (from the validated token,
+never client-claimed) may submit to `G` iff **any** of:
+
+- `G` does not yet exist **and** `envelope.kind == Welcome` — `D` founds `G` and
+  is recorded as the founding participant precisely by being the
+  `sender_device_id` on that founding Welcome row; or
+- `D` is the `sender_device_id` of some existing `group_messages` row in `G`
+  (this covers the founder on every submit after the founding Welcome); or
+- `D` is a `recipient_device_id` in `welcome_deliveries` for a Welcome in `G`.
+
+Otherwise → `forbidden` (403); no row is inserted and no fanout occurs. A
+consequence made explicit: the **first** submit to a new `gid` MUST be a Welcome
+(any other first kind fails the predicate, since `G` does not exist and
+`kind != Welcome`), which is exactly F2's ordering.
+
+This is a spam/metadata bound, not a security boundary: INV-4 remains the
+content-security authority (clients verify every credential/commit against MLS +
+the KT log), and INV-1 still makes any stray delivery of ciphertext to a
+non-member harmless. Evidence: `submit_rejects_non_participant` (added to
+Evidence above), alongside the existing `subscribe_rejects_non_addressee` for the
+read path.
