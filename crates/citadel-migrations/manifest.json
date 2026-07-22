@@ -2,7 +2,7 @@
   {
     "version": 1,
     "filename": "0001_accounts_devices_key_packages.sql",
-    "sha384": "87e3c32f578d61ba76f4fc1dd656563d690338808b78942a0666ae657831fe3aad7024d41a1be3bd33e839ebcd0ed614",
+    "sha384": "e40e71132731c4b2955722122215c93b7367de40229982c3088376d954dccd7218a6700b0655b8b057af674a008345a8",
     "responsible_service": "auth-service",
     "tx": "tx",
     "risk": "expand",
@@ -12,7 +12,7 @@
   {
     "version": 2,
     "filename": "0002_auth_challenges_tokens.sql",
-    "sha384": "aace3029bad8c1e4b3aac8a762950a8003584f1471f24f77e88a89f119b8e68071e5fea3bb4cea8423d3979c4624a611",
+    "sha384": "f1433cc6311705807a3e84cfd635b732375488c56638f560b072d3714c57367508ab51fde5d919fbfbdf97943e1107be",
     "responsible_service": "auth-service",
     "tx": "tx",
     "risk": "expand",
@@ -22,7 +22,7 @@
   {
     "version": 3,
     "filename": "0003_kt_log.sql",
-    "sha384": "7322c06a45a316326e8ee46434baf36ee7e13989f860dd83f0a099ca5e3180cc694ce2c9c13425d3d590862a25672676",
+    "sha384": "824397d69a7f6693005d9332117a4bffc3f4ee04b70a05b940a29fb6ea22b8b6a27917886b5e36368b53c7bc9bc11337",
     "responsible_service": "auth-service",
     "tx": "tx",
     "risk": "expand",
@@ -32,7 +32,7 @@
   {
     "version": 4,
     "filename": "0004_delivery_groups_messages.sql",
-    "sha384": "b7ce4ceb41b6b776b38724b7119e88e92b671f69f5dbb266367723666b10eba0ce061414674cb825998962ebcfa39536",
+    "sha384": "6f81be2de59c70692e452f4844e26463d972adfab6ee44debd240060178da178b7c7a128717a2d998dc501678c94356c",
     "responsible_service": "delivery-service",
     "tx": "tx",
     "risk": "expand",
