@@ -69,6 +69,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          # The migration checker hashes git blob bytes at HEAD and at the
+          # PR base SHA — both must resolve (ADR-0006 §4: no immutable base,
+          # no verdict).
+          fetch-depth: 0
 
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
@@ -100,6 +105,15 @@ jobs:
       # self-test probe must fire or the job fails.
       - name: Crypto confinement check
         run: python3 ci/check_crypto_confinement.py
+
+      # Canonical migration corpus (ADR-0006 §4): one corpus/runner, no
+      # ignore_missing, append-only vs the immutable base manifest, SHA-384
+      # and LF pins, git-blob-byte hashing. The base SHA is passed
+      # explicitly: pull_request.base.sha on PRs, github.event.before on
+      # main pushes — both immutable; the checker fails when no base is
+      # available rather than skipping the append-only verdict.
+      - name: Migration corpus check
+        run: python3 ci/check_migrations.py --base-sha "${{ github.event.pull_request.base.sha || github.event.before }}"
 
       - name: cargo audit
         run: cargo audit
@@ -137,6 +151,30 @@ jobs:
       - name: Harness stack-backed tests
         run: cargo test --locked -p test-harness -- --include-ignored
 
+      # ADR-0006 evidence `compose_services_wait_for_successful_migration_job`:
+      # the migrate one-shot must have exited 0, and every database-backed
+      # service must have STARTED strictly after it FINISHED (the
+      # service_completed_successfully gate). Timestamps are RFC 3339 UTC,
+      # so string comparison is chronological.
+      - name: Assert migration-job gate ordering
+        run: |
+          set -euo pipefail
+          cid=$(docker compose -f deploy/docker-compose.yml ps -a -q migrate)
+          [ -n "$cid" ] || { echo "migrate one-shot container not found"; exit 1; }
+          mexit=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
+          mfin=$(docker inspect -f '{{.State.FinishedAt}}' "$cid")
+          [ "$mexit" = "0" ] || { echo "migrate job exited $mexit — services must not have started healthy"; exit 1; }
+          for svc in auth-service delivery-service directory-service; do
+            scid=$(docker compose -f deploy/docker-compose.yml ps -q "$svc")
+            [ -n "$scid" ] || { echo "$svc container not found"; exit 1; }
+            started=$(docker inspect -f '{{.State.StartedAt}}' "$scid")
+            if [[ ! "$started" > "$mfin" ]]; then
+              echo "$svc started at $started but migrate finished at $mfin — gate violated"
+              exit 1
+            fi
+          done
+          echo "migration gate holds: migrate exited 0 at $mfin; services started after"
+
       - name: Compose down
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
@@ -145,7 +183,7 @@ jobs:
   # provisions the infrastructure; missing infra fails, never skips).
   # Runs the ignored DB tests: KeyPackage pool exactly-once property test,
   # M2 delivery store (idempotency/seq, participant authz, pagination,
-  # welcome delivery).
+  # welcome delivery), ADR-0006 canonical-migration evidence.
   db-tests:
     name: database-backed tests (PostgreSQL 16)
     runs-on: ubuntu-latest
@@ -178,10 +216,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      # auth-service (M1 pool/KT) + delivery-service (M2 message path) db
-      # tests share one database; both migrators run with ignore_missing.
+      # auth-service (M1 pool/KT) + delivery-service (M2 message path) +
+      # citadel-migrations (ADR-0006 canonical corpus/preflight/locking)
+      # db tests; every test initializes through the one canonical runner.
       - name: Run DB-backed tests
-        run: cargo test --locked -p auth-service -p delivery-service -- --include-ignored
+        run: cargo test --locked -p auth-service -p delivery-service -p citadel-migrations -- --include-ignored
 
   # M1 exit requirement (PLAN.md §13): harness injects canary plaintext
   # through client paths, then every server table and log stream is scanned
