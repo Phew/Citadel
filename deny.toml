@@ -14,7 +14,26 @@ no-default-features = false
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# First suppression block in this repo — format { id, reason } (cargo-deny
+# 0.20). All eight arrive via the OpenMLS/hpke-rs libcrux chain (M2
+# citadel-core) and every one is off Citadel's runtime crypto path; revisit
+# this block when hpke-rs ships an optional-dep fix that drops the libcrux
+# crates from the graph.
+ignore = [
+    # Ghost code, not compiled on any target — the RustCrypto aes-gcm /
+    # chacha20poly1305 crates are the implementations actually built.
+    { id = "RUSTSEC-2026-0209", reason = "libcrux aes-gcm ghost code, not compiled on any Citadel target; RustCrypto aes-gcm is the real implementation" },
+    { id = "RUSTSEC-2026-0211", reason = "libcrux aes-gcm ghost code, not compiled on any Citadel target; RustCrypto aes-gcm is the real implementation" },
+    { id = "RUSTSEC-2026-0210", reason = "libcrux-aesgcm ghost code, not compiled on any Citadel target; RustCrypto aes-gcm is the real implementation" },
+    { id = "RUSTSEC-2026-0124", reason = "libcrux-chacha20poly1305 ghost code, not compiled on any Citadel target; RustCrypto chacha20poly1305 is the real implementation" },
+    # Compiled, but Citadel's X25519/AES-128-GCM/SHA-256/Ed25519 suite never
+    # invokes SHA-3/SHAKE.
+    { id = "RUSTSEC-2026-0207", reason = "libcrux-sha3 compiled but unreachable: Citadel's cipher suite invokes no SHA-3/SHAKE" },
+    { id = "RUSTSEC-2026-0208", reason = "libcrux-sha3 compiled but unreachable: Citadel's cipher suite invokes no SHA-3/SHAKE" },
+    { id = "RUSTSEC-2026-0212", reason = "libcrux-secrets compiled but unreachable via any SHA-3/SHAKE call; Citadel's suite uses none" },
+    # Build-time proc-macro only; no upstream fix available.
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is build-time only (no runtime code path); no upstream fix exists" },
+]
 
 [licenses]
 version = 2
