@@ -99,9 +99,14 @@ pub async fn migrate_with_bounds(
 
     // Backstop over the whole run: lock bound + per-migration bounds +
     // margin. The statement-level settings are the primary mechanism.
+    // `run_direct` is sqlx's sanctioned path for a single already-acquired
+    // connection (`run` hits the Acquire "not general enough" limitation);
+    // it keeps the SAME connection, so the session settings above cover the
+    // migrator's lock and statements.
     let n_migrations = MIGRATOR.migrations.len() as u64;
-    let overall = Duration::from_secs(lock_timeout_secs + statement_timeout_secs * n_migrations + 60);
-    tokio::time::timeout(overall, MIGRATOR.run(&mut *conn))
+    let overall =
+        Duration::from_secs(lock_timeout_secs + statement_timeout_secs * n_migrations + 60);
+    tokio::time::timeout(overall, MIGRATOR.run_direct(&mut *conn))
         .await
         .map_err(|_| MigrateError::Timeout(overall))??;
     Ok(())
@@ -140,10 +145,11 @@ async fn preflight(conn: &mut PgConnection) -> Result<(), MigrateError> {
         )));
     }
 
-    let exists: bool = sqlx::query("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL AS e")
-        .fetch_one(&mut *conn)
-        .await?
-        .get("e");
+    let exists: bool =
+        sqlx::query("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL AS e")
+            .fetch_one(&mut *conn)
+            .await?
+            .get("e");
     if !exists {
         // Fresh database: empty history is a prefix of every corpus.
         return Ok(());
@@ -169,10 +175,7 @@ async fn preflight(conn: &mut PgConnection) -> Result<(), MigrateError> {
 /// version) must exactly match a prefix of `corpus` by version AND SHA-384
 /// checksum. Any dirty row, unknown version, hole, drift, or history longer
 /// than the corpus is fatal.
-fn check_prefix(
-    applied: &[AppliedRow],
-    corpus: &[sqlx::migrate::Migration],
-) -> Result<(), String> {
+fn check_prefix(applied: &[AppliedRow], corpus: &[sqlx::migrate::Migration]) -> Result<(), String> {
     if let Some(dirty) = applied.iter().find(|r| !r.success) {
         return Err(format!(
             "migration {:04} is recorded as failed (dirty); the database needs \
@@ -242,7 +245,7 @@ pub fn manifest() -> Vec<ManifestEntry> {
 
 #[cfg(test)]
 fn hex_decode(hex: &str) -> Vec<u8> {
-    assert!(hex.len() % 2 == 0, "hex string must have even length");
+    assert!(hex.len().is_multiple_of(2), "hex string must have even length");
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("manifest sha384 must be hex"))
@@ -256,7 +259,10 @@ mod tests {
     #[test]
     fn adr_bounds_are_the_pinned_values() {
         assert_eq!(LOCK_TIMEOUT_SECS, 60, "ADR-0006 §1 lock bound");
-        assert_eq!(MIGRATION_STATEMENT_TIMEOUT_SECS, 300, "ADR-0006 §1 execution bound");
+        assert_eq!(
+            MIGRATION_STATEMENT_TIMEOUT_SECS, 300,
+            "ADR-0006 §1 execution bound"
+        );
     }
 
     #[test]
@@ -264,7 +270,10 @@ mod tests {
         let entries = manifest();
         assert!(!entries.is_empty());
         for w in entries.windows(2) {
-            assert!(w[0].version < w[1].version, "versions must strictly increase");
+            assert!(
+                w[0].version < w[1].version,
+                "versions must strictly increase"
+            );
         }
         for e in &entries {
             assert!(e.version > 0);
@@ -326,7 +335,10 @@ mod tests {
         assert!(check_prefix(&[], corpus).is_ok());
         let one = vec![row(1, corpus, true)];
         assert!(check_prefix(&one, corpus).is_ok());
-        let full: Vec<_> = corpus.iter().map(|m| row(m.version, corpus, true)).collect();
+        let full: Vec<_> = corpus
+            .iter()
+            .map(|m| row(m.version, corpus, true))
+            .collect();
         assert!(check_prefix(&full, corpus).is_ok());
     }
 
@@ -341,7 +353,10 @@ mod tests {
     #[test]
     fn check_prefix_rejects_unknown_version() {
         let corpus = &MIGRATOR.migrations;
-        let mut applied: Vec<_> = corpus.iter().map(|m| row(m.version, corpus, true)).collect();
+        let mut applied: Vec<_> = corpus
+            .iter()
+            .map(|m| row(m.version, corpus, true))
+            .collect();
         applied.push(row(999, corpus, true));
         let err = check_prefix(&applied, corpus).unwrap_err();
         assert!(err.contains("exceed the embedded corpus"), "{err}");
