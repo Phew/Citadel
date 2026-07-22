@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Load-bearing (ADR-0006, review flag 3), NOT hygiene: sqlx::migrate!
+# embeds working-tree bytes at compile time, so a CRLF checkout (Windows
+# autocrlf) would silently change the embedded SHA-384 checksums and break
+# the exact-prefix preflight. Pin the canonical corpus and manifest to LF.
+crates/citadel-migrations/migrations/*.sql text eol=lf
+crates/citadel-migrations/manifest.json text eol=lf
