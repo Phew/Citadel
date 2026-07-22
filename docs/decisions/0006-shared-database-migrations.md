@@ -1,11 +1,52 @@
 # ADR-0006: Canonical migrations for the shared database
 
-- **Status:** PROPOSED
+- **Status:** ACCEPTED
 - **Date:** 2026-07-21
-- **Deciders:** charge (required for ACCEPTED)
+- **Accepted:** charge, 2026-07-21
+- **Implementation scope:** phased
 - **Invariants touched:** INV-1, INV-4, INV-6, INV-7
 - **Related:** plans/PLAN.md §§2, 3, 6, 9, 13; plans/AGENTS.md rules 3, 4, 8;
   docs/decisions/0001 §4, 0005 §2 and Amendment 1; PR #39
+
+## Acceptance note
+
+The decision is accepted in full with phased implementation per the design
+review recorded on PR #40. CORE is the merge gate for the PR #39 rework.
+Follow-ups A-D remain binding and land as tracked, independent PRs without
+blocking PR #39.
+
+CORE delivers:
+
+- `crates/citadel-migrations` with migrations 0001-0004 moved byte-identically,
+  the exact-prefix preflight, canonical library, `citadel-migrate` binary, and
+  migration manifest;
+- PR #39 reworked to remove both `ignore_missing` overrides, service-local
+  migration directories, and service-startup migrators;
+- the Compose migration-job gate and a `just migrate` recipe for development
+  outside Compose;
+- `ci/check_migrations.py` with the canonical-corpus, runner, locking,
+  append-only, base-manifest, checksum, explicit-base-SHA, LF, and Git-blob-byte
+  rules plus their injected controls; and
+- the core PostgreSQL 16 evidence for clean apply, no-op reapply, upgrade,
+  divergence rejection, concurrent serialization, lock timeout, Compose
+  gating, and checker behavior.
+
+The follow-ups are:
+
+- **A:** role isolation, idempotent role bootstrap, runtime credentials, and
+  PostgreSQL permission evidence;
+- **B:** service minimum-schema declarations, read-only startup checks, and
+  service-discovery enforcement;
+- **C:** fail-closed migration risk-classification enforcement and its
+  PostgreSQL compatibility evidence; and
+- **D:** rollback check-only evidence, failed-migration Compose gating, and the
+  remaining injected probes.
+
+Review flag 2 is confirmed safe: an in-progress canonical history remains an
+exact prefix before concurrent runners serialize. Review flag 3 remains in
+CORE because LF checkout and Git-blob-byte hashing protect embedded SQLx
+checksums. Review flag 5 is folded into the CORE development flow through
+`just migrate`. Review flag 1 is addressed by follow-up A.
 
 ## Context
 
@@ -113,8 +154,12 @@ manifest records review responsibility; it does not split execution history.
 CI compares the pull request against the protected base manifest, so changing
 a manifest entry and its SQL file together cannot disguise a rewrite.
 
-Risk classifications are `expand`, `contract`, and `data`. Every new migration
-requires an ACCEPTED ADR that names its classification and recovery method.
+Risk classifications are `expand`, `contract`, and `data`. Every migration
+traces through its manifest entry to an ACCEPTED ADR that governs its schema
+decision; it does not require a fresh ADR for each migration file. For example,
+migration 0004 traces to ADR-0005. The manifest records the classification and
+recovery method in CORE, while follow-up C adds the fail-closed classification
+enforcement described below.
 `expand` is intentionally narrow: it may add a table, index, or nullable column
 without a default, and may not execute DML or alter, rename, remove, constrain,
 or change privileges on an existing object. `contract` covers every removal,
@@ -223,7 +268,7 @@ equivalent delivery-service setting is not retained. Auth-service migrations
 0001-0003 and delivery-service migration 0004 move unchanged into the canonical
 corpus. Auth-service and delivery-service production startup stop applying
 service-local migrations; their database tests call the canonical migration
-library. PR #39 may implement these changes only after this ADR is ACCEPTED.
+library. This accepted ADR authorizes those changes in the CORE phase.
 
 Directory-service in M4 and blobstore-service in M5 follow the same specified
 path from their first database table: add the next canonical migration,
@@ -297,8 +342,8 @@ database is required:
 - `compose_services_wait_for_successful_migration_job`
 - `compose_services_stay_stopped_after_migration_failure`
 
-## Ruling requested
+## Ruling
 
-Accept the canonical corpus and dedicated `citadel-migrate` job described
-above. Reject per-service partial migrators and remove both `ignore_missing`
-settings from PR #39.
+charge accepted the canonical corpus and dedicated `citadel-migrate` job on
+2026-07-21 with the phased scope recorded above. Per-service partial migrators
+remain rejected, and both `ignore_missing` settings are removed from PR #39.
