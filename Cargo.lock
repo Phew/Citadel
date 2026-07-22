@@ -53,6 +53,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "citadel-migrations",
  "citadel-proto",
  "citadel-service-crypto",
  "kt-log",
@@ -416,6 +417,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "citadel-migrations",
  "citadel-proto",
  "citadel-service-crypto",
  "futures-util",

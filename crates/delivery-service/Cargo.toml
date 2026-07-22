@@ -31,12 +31,16 @@ base64 = { workspace = true }
 futures-util = "0.3"
 # Row/insert binding for the UUID columns (sqlx "uuid" feature).
 uuid = { workspace = true }
-# Service state lives in PostgreSQL via sqlx (PLAN.md §4); committed
-# migrations in ./migrations are the only schema source. Numbering starts at
-# 0004 — auth-service owns 0001–0003 in the shared _sqlx_migrations table.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate", "macros"] }
+# Service state lives in PostgreSQL via sqlx (PLAN.md §4). The service never
+# migrates: the canonical corpus and runner live in citadel-migrations
+# (ADR-0006), which is the ONLY crate allowed sqlx's `migrate` feature.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "macros"] }
 
 [dev-dependencies]
+# Database tests initialize through the SAME canonical entry point as the
+# production migration job (ADR-0006 §1: test and production schema
+# construction cannot drift).
+citadel-migrations = { path = "../citadel-migrations" }
 # Property tests (PLAN.md §10): gap-free seq under random concurrent
 # submits, against real PostgreSQL in the CI db-tests job.
 proptest = "1"

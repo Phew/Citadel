@@ -65,22 +65,6 @@ pub enum SubmitOutcome {
     Replayed(SubmitMessageResponse),
 }
 
-/// Apply the committed migrations to `pool` (EMBEDDED at compile time; the
-/// release binary migrates inside a container with no source tree).
-///
-/// `ignore_missing` is load-bearing for the shared-database layout:
-/// auth-service's migrator records versions 0001–0003 in the same
-/// `_sqlx_migrations` table, and sqlx errors with "previously applied but
-/// missing" when a migrator sees applied versions outside its own set.
-/// Delivery numbering therefore starts at 0004 (a same-version
-/// different-checksum clash would be fatal) and both migrators tolerate the
-/// other's rows.
-pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    let mut migrator = sqlx::migrate!("./migrations");
-    migrator.ignore_missing = true;
-    migrator.run(pool).await
-}
-
 /// The kind TEXT values are pinned by the schema CHECK constraint
 /// (`kind IN ('application','proposal','commit','welcome')`); `control`
 /// envelopes exist on the wire (proto) but are not storable (ADR-0005 §2).

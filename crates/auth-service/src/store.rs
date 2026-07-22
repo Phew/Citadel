@@ -33,24 +33,6 @@ pub struct ConsumedPackage {
     pub package_bytes: Vec<u8>,
 }
 
-/// Apply the committed migrations to `pool`. Migrations are the only schema
-/// source (no init.sql duplication beyond the M0 sentinel). They are
-/// EMBEDDED at compile time: the release binary migrates at startup inside
-/// a container that has no source tree, so a runtime path lookup would be
-/// a startup crash (first compose-smoke run of the F1 endpoints failed on
-/// exactly that).
-///
-/// `ignore_missing` is load-bearing for the shared-database layout:
-/// delivery-service's migrator (ADR-0005, versions 0004+) records its rows
-/// in the same `_sqlx_migrations` table, and sqlx errors with "previously
-/// applied but missing" when a migrator sees applied versions outside its
-/// own set. Both services tolerate the other's rows.
-pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    let mut migrator = sqlx::migrate!("./migrations");
-    migrator.ignore_missing = true;
-    migrator.run(pool).await
-}
-
 /// Add packages to a device's pool; returns the unconsumed pool size after
 /// the insert (PublishKeyPackagesResponse.pool_size).
 pub async fn publish(

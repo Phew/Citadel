@@ -2,8 +2,9 @@
 //!
 //! Connects to PostgreSQL (DATABASE_URL is required — a service without its
 //! store is useless, and missing infrastructure must fail loudly, PLAN.md
-//! §13), applies the committed migrations, then serves the router: the M2
-//! message path and the WS gateway (ADR-0005).
+//! §13), then serves the router: the M2 message path and the WS gateway
+//! (ADR-0005). The service applies NO migrations at startup: schema changes
+//! are the canonical citadel-migrate job's exclusive authority (ADR-0006 §1).
 
 use delivery_service::server::{self, AppState};
 use sqlx::postgres::PgPoolOptions;
@@ -24,9 +25,6 @@ async fn main() {
         .connect(&database_url)
         .await
         .expect("connect to PostgreSQL");
-    delivery_service::store::migrate(&pool)
-        .await
-        .expect("apply migrations");
 
     let port = std::env::var("PORT")
         .ok()

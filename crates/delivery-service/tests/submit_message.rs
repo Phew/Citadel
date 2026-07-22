@@ -28,15 +28,17 @@ fn db_url() -> String {
     )
 }
 
-/// Connect and migrate. Delivery's migrator runs with `ignore_missing` so it
-/// coexists with auth-service's rows in the shared `_sqlx_migrations` table.
+/// Connect and migrate through the canonical entry point (ADR-0006 §1:
+/// tests and the production migration job construct schema identically).
 async fn fresh_pool() -> PgPool {
     let pool = PgPoolOptions::new()
         .max_connections(32)
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
-    store::migrate(&pool).await.expect("apply migrations");
+    citadel_migrations::migrate(&pool)
+        .await
+        .expect("apply canonical migrations (ADR-0006)");
     pool
 }
 
