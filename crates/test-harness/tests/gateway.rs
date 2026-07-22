@@ -13,6 +13,10 @@
 //!   in G gets an `Error` frame and no fanout for G (decision #5:
 //!   spam-hygiene authorization), and its REST submit gets 403
 //!   (Amendment 1 §B).
+//! - `welcome_redelivered_until_subscribe` — welcome delivery is
+//!   at-least-once wrt CONSUMPTION: re-pushed on every connect until the
+//!   client subscribes to the group (the post-verification join signal),
+//!   never marked by a transport flush alone.
 //!
 //! Ignored by default so plain `cargo test --workspace` stays infra-free,
 //! but NEVER silently green: a missing stack is a hard failure via
@@ -282,14 +286,83 @@ async fn f2_gateway_welcome_delivery() {
     assert_eq!(page.messages[0].kind, EnvelopeKind::Welcome);
     assert_eq!(page.messages[1].kind, EnvelopeKind::Application);
 
-    // The pushed Welcome was marked delivered: a second connect pushes
-    // nothing before we unsubscribe-quietly close.
+    // B subscribed to G on this socket, which is the post-consumption
+    // delivery signal: a second connect pushes nothing.
     let mut ws_b2 = gateway_connect(&endpoints.delivery, &b.token).await;
     let nothing = tokio::time::timeout(Duration::from_millis(1500), ws_b2.next()).await;
     assert!(
         nothing.is_err(),
-        "a delivered welcome must not be pushed again on reconnect"
+        "a consumed (subscribed) welcome must not be pushed again on reconnect"
     );
+}
+
+/// At-least-once welcome delivery wrt CONSUMPTION (F2): a welcome is
+/// re-pushed on every connect until the client subscribes to its group —
+/// the Subscribe frame is the post-verification (KT/GroupInfo, INV-4) join
+/// signal, and only it marks the delivery. A transport flush proves nothing
+/// about consumption.
+#[tokio::test]
+#[ignore = "requires live docker compose stack; CI compose-smoke job runs it"]
+async fn welcome_redelivered_until_subscribe() {
+    let http = probe_client().expect("harness probe client must build");
+    let endpoints = require_stack(&http)
+        .await
+        .expect("compose stack must be up; CI provisions it before this test runs");
+    let auth = TestClient::new(http.clone(), endpoints.auth.clone());
+    let delivery = TestClient::new(http.clone(), endpoints.delivery.clone());
+
+    let a = register_and_authenticate(&auth, 0xD0).await;
+    let b = register_and_authenticate(&auth, 0xD2).await;
+    let gid = GroupId::new();
+
+    let welcome = submit(
+        &delivery,
+        &a.token,
+        gid,
+        EnvelopeKind::Welcome,
+        1,
+        b"stand-in-mls-welcome-redelivery",
+        vec![b.device_id],
+    )
+    .await;
+    assert_eq!(welcome.seq, 1);
+
+    // Socket 1: the welcome is pushed; B disconnects WITHOUT subscribing —
+    // nothing may be marked delivered by the push alone.
+    let mut ws1 = gateway_connect(&endpoints.delivery, &b.token).await;
+    let first = expect_message(recv_frame(&mut ws1).await, "the first welcome push");
+    assert_eq!(first.kind, EnvelopeKind::Welcome);
+    assert_eq!(first.seq, Some(1));
+    drop(ws1);
+
+    // Socket 2: the SAME welcome is re-pushed (redelivery — a flush was not
+    // consumption). B now subscribes: the post-join signal.
+    let mut ws2 = gateway_connect(&endpoints.delivery, &b.token).await;
+    let second = expect_message(recv_frame(&mut ws2).await, "the redelivered welcome");
+    assert_eq!(
+        second, first,
+        "the re-pushed welcome must be the same message (client dedups via MLS state)"
+    );
+    send_frame(&mut ws2, &subscribe(gid)).await;
+    match recv_frame(&mut ws2).await {
+        GatewayServerFrame::Subscribed { group_ids } => assert_eq!(group_ids, vec![gid]),
+        other => panic!("expected Subscribed, got {other:?}"),
+    }
+    drop(ws2);
+
+    // Socket 3: the subscribe marked the delivery — silence on connect,
+    // while the subscribe path itself still works.
+    let mut ws3 = gateway_connect(&endpoints.delivery, &b.token).await;
+    let nothing = tokio::time::timeout(Duration::from_millis(1500), ws3.next()).await;
+    assert!(
+        nothing.is_err(),
+        "a consumed (subscribed) welcome must not be re-pushed"
+    );
+    send_frame(&mut ws3, &subscribe(gid)).await;
+    match recv_frame(&mut ws3).await {
+        GatewayServerFrame::Subscribed { group_ids } => assert_eq!(group_ids, vec![gid]),
+        other => panic!("subscribe must still work after welcome consumption, got {other:?}"),
+    }
 }
 
 #[tokio::test]

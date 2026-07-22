@@ -3,15 +3,21 @@
 //! #4: one write path, so seq assignment and idempotency have one home).
 //!
 //! Connection lifecycle for an authenticated device:
-//! 1. Push its undelivered welcomes as `Message` frames, then mark exactly
-//!    those as delivered. This is at-least-once: if the socket dies
-//!    mid-push, the unmarked rows redeliver on the next connect and the
-//!    client dedups (MLS state / message id). Marking before pushing would
-//!    be at-most-once and could lose a Welcome — the wrong tradeoff.
+//! 1. Push its undelivered welcomes as `Message` frames — and mark NOTHING.
+//!    A welcome is marked delivered only when the client sends a Subscribe
+//!    frame naming its group (handled in step 3): in the F2 flow that frame
+//!    is sent after the client has verified (KT/GroupInfo) and joined the
+//!    group, so it is the true post-CONSUMPTION signal. Marking at push time
+//!    would only prove a transport flush — a client crashing after flush but
+//!    before reading would lose the Welcome forever and the joiner would be
+//!    stranded. Consequence: a welcome is re-pushed on EVERY connect until
+//!    the client subscribes to its group — at-least-once; the client dedups
+//!    via MLS state.
 //! 2. Subscribe to the live fanout broadcast.
 //! 3. Loop over socket frames and broadcast events: `Subscribe`/`Unsubscribe`
 //!    manage a per-connection group set; fanned-out envelopes forward to the
-//!    socket only for subscribed groups.
+//!    socket only for subscribed groups. An accepted Subscribe also marks
+//!    that group's welcomes delivered (step 1's consumption signal).
 //!
 //! Subscription authorization is spam hygiene, never confidentiality
 //! (decision #5): a device may subscribe iff delivery metadata shows it as
@@ -35,25 +41,22 @@ use crate::store;
 pub async fn run(socket: WebSocket, state: AppState, device: DeviceId) {
     let (mut sink, mut stream) = socket.split();
 
-    // ---- (1) F2 welcome delivery (ADR-0005 §1): push first, mark after.
+    // ---- (1) F2 welcome delivery (ADR-0005 §1): push, mark NOTHING. The
+    // consumption signal is the client's later Subscribe (see module docs);
+    // until then every connect re-pushes these rows (at-least-once, the
+    // client dedups via MLS state).
     match store::undelivered_welcomes(&state.pool, device).await {
         Ok(welcomes) => {
-            let mut pushed = Vec::with_capacity(welcomes.len());
-            for (message_id, envelope) in welcomes {
+            for (_message_id, envelope) in welcomes {
                 let frame = GatewayServerFrame::Message { envelope };
                 let Ok(text) = serde_json::to_string(&frame) else {
                     continue;
                 };
                 if sink.send(WsMessage::Text(text.into())).await.is_err() {
-                    // Socket died mid-push: nothing below is marked, so every
-                    // welcome redelivers on the next connect (at-least-once).
+                    // Socket died mid-push: nothing is ever marked at this
+                    // stage, so every welcome redelivers on the next connect.
                     return;
                 }
-                pushed.push(message_id);
-            }
-            if let Err(e) = store::mark_welcomes_delivered(&state.pool, device, &pushed).await {
-                // Non-fatal: rows stay undelivered and the client dedups.
-                tracing::warn!(error = %e, "could not mark welcomes delivered");
             }
         }
         Err(e) => {
@@ -147,6 +150,20 @@ async fn handle_client_frame(
                 }
             }
             if !accepted.is_empty() {
+                // Post-consumption welcome delivery signal (F2): the client
+                // subscribes to a welcomed group only after verifying and
+                // joining it, so an ACCEPTED subscribe is the right moment to
+                // mark that group's welcomes delivered — never on rejected
+                // gids. Trust posture: this is the client's post-verification
+                // claim (INV-4); over-marking only stops re-pushes of
+                // ciphertext the device could sync anyway (INV-1).
+                if let Err(e) =
+                    store::mark_welcomes_delivered_for_groups(&state.pool, device, &accepted).await
+                {
+                    // Non-fatal: rows stay undelivered and re-push next
+                    // connect; the client dedups.
+                    tracing::warn!(error = %e, "could not mark welcomes delivered on subscribe");
+                }
                 let frame = GatewayServerFrame::Subscribed {
                     group_ids: accepted,
                 };

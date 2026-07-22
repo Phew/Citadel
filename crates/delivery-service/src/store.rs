@@ -150,34 +150,70 @@ pub async fn submit_message(
 
     let mut tx = pool.begin().await?;
 
-    // ---- (a) Participant authorization, BEFORE any write (Amendment 1 §B).
-    // A rejected first submit must return before the groups-row upsert:
-    // materializing the row would permanently lock the gid against the real
-    // founder's Welcome.
-    let group_exists = sqlx::query("SELECT 1 AS one FROM groups WHERE mls_group_id = $1")
+    // ---- (a) Authorization, with founder status made ATOMIC with groups-row
+    // creation (Amendment 1 §B). The naive shape — probe for the row, then
+    // upsert — has a founding race: two concurrent first-Welcomes would both
+    // pass "no row → kind == Welcome → founder" before either inserts, and
+    // the loser would sail through ON CONFLICT DO NOTHING (0 rows) into seq
+    // assignment, admitted without ever passing is_participant_in.
+    //
+    // Instead, for a Welcome the upsert IS the founder test: the transaction
+    // whose INSERT adds the row (rows_affected == 1) is the founder. Postgres
+    // makes this race-safe: a concurrent INSERT ... ON CONFLICT DO NOTHING
+    // blocks on the winner's uncommitted speculative insert, then either
+    // inserts (winner rolled back → this tx is the founder) or reports 0
+    // rows (winner committed → fall through to is_participant_in, which a
+    // fresh non-member fails — the loser sees the winner's committed
+    // group_messages row and is neither its sender nor a recipient).
+    //
+    // For any other kind the row must already exist (the first submit to a
+    // gid MUST be a Welcome): a missing row → 403 before any write, so a
+    // rejected submit never materializes the row and locks the gid against
+    // the real founder. No upsert happens on this path — the row exists by
+    // the time a non-Welcome submit is authorized.
+    if env.kind == EnvelopeKind::Welcome {
+        let inserted = sqlx::query(
+            "INSERT INTO groups (mls_group_id, dm) VALUES ($1, true) ON CONFLICT DO NOTHING",
+        )
         .bind(gid.as_uuid())
-        .fetch_optional(&mut *tx)
+        .execute(&mut *tx)
         .await?
-        .is_some();
-    if !group_exists {
-        if env.kind != EnvelopeKind::Welcome {
+        .rows_affected();
+        if inserted == 0 && !is_participant_in(&mut tx, authed, gid).await? {
+            // The row already existed: a concurrent founder won the race, or
+            // the group is old. Only an existing participant may submit a
+            // (later) Welcome.
+            tx.rollback().await?;
+            return Err(StoreError::Forbidden(
+                "sender is not a participant in this group (Amendment 1 §B)".into(),
+            ));
+        }
+        // inserted == 1: this transaction IS the founder — authorized
+        // precisely by creating the group row with its founding Welcome.
+    } else {
+        let group_exists = sqlx::query("SELECT 1 AS one FROM groups WHERE mls_group_id = $1")
+            .bind(gid.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+        if !group_exists {
             tx.rollback().await?;
             return Err(StoreError::Forbidden(
                 "the first submit to a group must be a welcome (Amendment 1 §B)".into(),
             ));
         }
-        // Founder: authorized precisely by submitting the founding Welcome.
-    } else if !is_participant_in(&mut tx, authed, gid).await? {
-        tx.rollback().await?;
-        return Err(StoreError::Forbidden(
-            "sender is not a participant in this group (Amendment 1 §B)".into(),
-        ));
+        if !is_participant_in(&mut tx, authed, gid).await? {
+            tx.rollback().await?;
+            return Err(StoreError::Forbidden(
+                "sender is not a participant in this group (Amendment 1 §B)".into(),
+            ));
+        }
     }
 
     // ---- (b) Idempotency pre-check: an already-stored submit with this
     // (gid, idempotency_key) returns the ORIGINAL assignment. Nothing was
-    // written this transaction, but commit anyway to release the connection
-    // on a clean path.
+    // written this transaction beyond the idempotent groups-row upsert, but
+    // commit anyway to release the connection on a clean path.
     if let Some(row) = sqlx::query(&format!(
         "SELECT id, seq, epoch, {SERVER_TS_MS_EXPR} AS server_ts_ms \
          FROM group_messages WHERE mls_group_id = $1 AND idempotency_key = $2"
@@ -192,14 +228,7 @@ pub async fn submit_message(
         return Ok(SubmitOutcome::Replayed(response));
     }
 
-    // ---- (c) Lazy groups-row creation (Amendment 1 §A). ON CONFLICT DO
-    // NOTHING makes concurrent first-submits and retries safe.
-    sqlx::query("INSERT INTO groups (mls_group_id, dm) VALUES ($1, true) ON CONFLICT DO NOTHING")
-        .bind(gid.as_uuid())
-        .execute(&mut *tx)
-        .await?;
-
-    // ---- (d) Serialization point: lock the groups row, assign next_seq+1,
+    // ---- (c) Serialization point: lock the groups row, assign next_seq+1,
     // bump it. Concurrent submits serialize here; seq is gap-free because a
     // rolled-back transaction also rolls back the bump.
     let row = sqlx::query("SELECT next_seq FROM groups WHERE mls_group_id = $1 FOR UPDATE")
@@ -214,7 +243,7 @@ pub async fn submit_message(
         .execute(&mut *tx)
         .await?;
 
-    // ---- (e) Insert the ciphertext row. If a concurrent replay raced past
+    // ---- (d) Insert the ciphertext row. If a concurrent replay raced past
     // step (b), this insert conflicts on (mls_group_id, idempotency_key) and
     // returns NO row: ROLLBACK (undoing the seq bump — gap-freedom depends
     // on it) and re-read the winner's assignment fresh.
@@ -251,7 +280,7 @@ pub async fn submit_message(
     };
     let server_ts: i64 = inserted.get("server_ts_ms");
 
-    // ---- (f) F2 Welcome addressing: one delivery row per recipient device,
+    // ---- (e) F2 Welcome addressing: one delivery row per recipient device,
     // same transaction as the message row (ADR-0005 §1).
     if env.kind == EnvelopeKind::Welcome {
         let recipients: Vec<uuid::Uuid> = req
@@ -270,7 +299,7 @@ pub async fn submit_message(
         .await?;
     }
 
-    // ---- (g) Commit, THEN the caller fans out (never before commit).
+    // ---- (f) Commit, THEN the caller fans out (never before commit).
     tx.commit().await?;
 
     let response = SubmitMessageResponse {
@@ -393,10 +422,10 @@ pub async fn fetch_messages(
     })
 }
 
-/// Undelivered welcomes addressed to a device, pushed on its next gateway
-/// connect (ADR-0005 §1 F2). Served by the partial index
-/// `welcome_deliveries_pending` (the PK leads with welcome_message_id and
-/// cannot serve the recipient lookup).
+/// Undelivered welcomes addressed to a device, pushed on its every gateway
+/// connect until the device subscribes to the welcome's group (ADR-0005 §1
+/// F2). Served by the partial index `welcome_deliveries_pending` (the PK
+/// leads with welcome_message_id and cannot serve the recipient lookup).
 pub async fn undelivered_welcomes(
     pool: &PgPool,
     device: DeviceId,
@@ -420,22 +449,36 @@ pub async fn undelivered_welcomes(
         .collect())
 }
 
-/// Mark exactly these welcomes delivered for this device. At-least-once
-/// semantics: rows a dead socket never pushed stay NULL and redeliver on the
-/// next connect (the client dedups on message id / MLS state).
-pub async fn mark_welcomes_delivered(
+/// Mark this device's pending welcome deliveries in `gids` delivered. Called
+/// from the gateway's Subscribe handler, on ACCEPTED groups only: in the F2
+/// flow the client subscribes after it has verified (KT/GroupInfo) and
+/// joined the group, so the Subscribe frame is the post-CONSUMPTION signal
+/// — a transport flush is not (a client crashing after flush but before
+/// reading must see the welcome re-pushed, or the joiner is stranded).
+///
+/// Trust posture: the subscribe is the client's post-verification claim
+/// (INV-4 remains the content-security authority), and over-marking only
+/// stops re-pushes of ciphertext the same device could fetch via `?after=`
+/// sync anyway (INV-1) — never a confidentiality boundary.
+pub async fn mark_welcomes_delivered_for_groups(
     pool: &PgPool,
     device: DeviceId,
-    welcome_message_ids: &[MessageId],
+    gids: &[GroupId],
 ) -> Result<(), StoreError> {
-    let ids: Vec<uuid::Uuid> = welcome_message_ids.iter().map(|m| m.as_uuid()).collect();
+    if gids.is_empty() {
+        return Ok(());
+    }
+    let gids: Vec<uuid::Uuid> = gids.iter().map(|g| g.as_uuid()).collect();
     sqlx::query(
-        "UPDATE welcome_deliveries SET delivered_at = now() \
-         WHERE recipient_device_id = $1 AND welcome_message_id = ANY($2) \
-           AND delivered_at IS NULL",
+        "UPDATE welcome_deliveries w SET delivered_at = now() \
+         FROM group_messages m \
+         WHERE m.id = w.welcome_message_id \
+           AND w.recipient_device_id = $1 \
+           AND m.mls_group_id = ANY($2) \
+           AND w.delivered_at IS NULL",
     )
     .bind(device.as_uuid())
-    .bind(&ids)
+    .bind(&gids)
     .execute(pool)
     .await?;
     Ok(())

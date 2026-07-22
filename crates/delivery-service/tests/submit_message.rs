@@ -405,8 +405,9 @@ async fn welcome_deliveries_track_recipients_and_delivery() {
         .unwrap()
         .is_empty());
 
-    // Marking B's delivery clears only B; C's row is untouched.
-    store::mark_welcomes_delivered(&pool, recip_b, &[welcome_id])
+    // Marking B's deliveries in this group (the Subscribe-path function)
+    // clears only B; C's row is untouched.
+    store::mark_welcomes_delivered_for_groups(&pool, recip_b, &[gid])
         .await
         .expect("mark delivered");
     assert!(store::undelivered_welcomes(&pool, recip_b)
@@ -421,4 +422,124 @@ async fn welcome_deliveries_track_recipients_and_delivery() {
         1,
         "marking one recipient must not clear the other"
     );
+
+    // Marking is group-scoped: an unrelated gid touches nothing.
+    store::mark_welcomes_delivered_for_groups(&pool, recip_c, &[GroupId::new()])
+        .await
+        .expect("mark for unrelated group");
+    assert_eq!(
+        store::undelivered_welcomes(&pool, recip_c)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "an unrelated group must not clear the pending welcome"
+    );
+    store::mark_welcomes_delivered_for_groups(&pool, recip_c, &[gid])
+        .await
+        .expect("mark delivered");
+    assert!(store::undelivered_welcomes(&pool, recip_c)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// The founding race (Amendment 1 §B): two devices that are NEITHER members
+/// race a first-Welcome to the same fresh gid. Founder status must be atomic
+/// with groups-row creation (the upsert's rows_affected), so exactly one
+/// transaction founds the group and the loser fails the participant check —
+/// never admitted, never a second message row.
+#[tokio::test]
+#[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
+async fn founding_race_admits_only_winning_founder() {
+    let pool = fresh_pool().await;
+
+    for round in 0..16u32 {
+        let gid = GroupId::new();
+        let dev_a = DeviceId::new();
+        let dev_b = DeviceId::new();
+        // Disjoint addressing: neither racer is an addressee of the other's
+        // welcome, so the loser has no participant claim on the winner's row.
+        let recip_a = DeviceId::new();
+        let recip_b = DeviceId::new();
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let race = |device: DeviceId, recip: DeviceId, tag: &str| {
+            let pool = pool.clone();
+            let barrier = barrier.clone();
+            let req = welcome_request(
+                gid,
+                0,
+                format!("race-welcome-{round}-{tag}").as_bytes(),
+                vec![recip],
+            );
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store::submit_message(&pool, device, gid, req).await
+            })
+        };
+        let (res_a, res_b) = (race(dev_a, recip_a, "a"), race(dev_b, recip_b, "b"));
+        let res_a = res_a.await.expect("racer A panicked");
+        let res_b = res_b.await.expect("racer B panicked");
+
+        let created = [&res_a, &res_b]
+            .iter()
+            .filter(|r| matches!(r, Ok(SubmitOutcome::Created(_, _))))
+            .count();
+        let forbidden = [&res_a, &res_b]
+            .iter()
+            .filter(|r| matches!(r, Err(StoreError::Forbidden(_))))
+            .count();
+        assert_eq!(
+            (created, forbidden),
+            (1, 1),
+            "round {round}: exactly one founder may be admitted, got A={res_a:?} B={res_b:?}"
+        );
+
+        // One message row, seq 1, addressed only by the winner's welcome.
+        assert_eq!(
+            message_count(&pool, gid).await,
+            1,
+            "round {round}: exactly one group_messages row"
+        );
+        let page = store::fetch_messages(&pool, gid, 0).await.expect("sync");
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0].seq, Some(1));
+
+        let (loser, loser_device) = if matches!(res_a, Ok(SubmitOutcome::Created(_, _))) {
+            (&res_b, dev_b)
+        } else {
+            (&res_a, dev_a)
+        };
+        assert!(
+            matches!(loser, Err(StoreError::Forbidden(_))),
+            "round {round}: the loser must be Forbidden"
+        );
+        let deliveries = store::undelivered_welcomes(&pool, recip_a)
+            .await
+            .unwrap()
+            .len()
+            + store::undelivered_welcomes(&pool, recip_b)
+                .await
+                .unwrap()
+                .len();
+        assert_eq!(
+            deliveries, 1,
+            "round {round}: only the winner's welcome_deliveries rows exist"
+        );
+
+        // The loser stays rejected on retry — no silent admission.
+        let retry = store::submit_message(
+            &pool,
+            loser_device,
+            gid,
+            welcome_request(gid, 0, b"race-retry", vec![DeviceId::new()]),
+        )
+        .await;
+        assert!(
+            matches!(retry, Err(StoreError::Forbidden(_))),
+            "round {round}: the loser must stay Forbidden on retry, got {retry:?}"
+        );
+        assert_eq!(message_count(&pool, gid).await, 1);
+    }
 }
