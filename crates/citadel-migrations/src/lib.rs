@@ -245,7 +245,10 @@ pub fn manifest() -> Vec<ManifestEntry> {
 
 #[cfg(test)]
 fn hex_decode(hex: &str) -> Vec<u8> {
-    assert!(hex.len().is_multiple_of(2), "hex string must have even length");
+    assert!(
+        hex.len().is_multiple_of(2),
+        "hex string must have even length"
+    );
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("manifest sha384 must be hex"))
