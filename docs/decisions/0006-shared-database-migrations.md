@@ -1,7 +1,7 @@
 # ADR-0006: Canonical migrations for the shared database
 
 - **Status:** ACCEPTED
-- **Amendment 1:** PROPOSED (2026-07-23)
+- **Amendment 1:** ACCEPTED (charge, 2026-07-23, as proposed; recorded by advisor)
 - **Date:** 2026-07-21
 - **Accepted:** charge, 2026-07-21
 - **Implementation scope:** phased
@@ -56,7 +56,7 @@ CORE because LF checkout and Git-blob-byte hashing protect embedded SQLx
 checksums. Review flag 5 is folded into the CORE development flow through
 `just migrate`. Review flag 1 is addressed by follow-up A.
 
-## Amendment 1 (PROPOSED): safe creation schema
+## Amendment 1 (ACCEPTED): safe creation schema
 
 PR #39 [run 29983887580][failed-run] disproved the search-path ordering in §1.
 SQLx 0.8.6 creates `_sqlx_migrations` with an unqualified
@@ -402,4 +402,10 @@ database is required:
 charge accepted the canonical corpus and dedicated `citadel-migrate` job on
 2026-07-21 with the phased scope recorded above. Per-service partial migrators
 remain rejected, and both `ignore_missing` settings are removed from PR #39.
-Amendment 1 remains PROPOSED until charge accepts the corrected schema policy.
+charge accepted Amendment 1 on 2026-07-23 as proposed: migration connections
+use `SET search_path TO public, pg_temp`, leaving `pg_catalog` unnamed so it
+keeps implicit lookup precedence while `public` remains the first explicit
+schema and therefore SQLx's unqualified creation target. The alternative
+ordering `public, pg_catalog, pg_temp` is rejected for the reason given above.
+Implementation lands in PR #39 with the named evidence test
+`canonical_migrations_create_public_history_with_catalog_and_temp_precedence`.
