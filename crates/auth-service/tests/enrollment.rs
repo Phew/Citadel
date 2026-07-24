@@ -38,39 +38,58 @@ fn db_url() -> String {
     )
 }
 
-/// Per-test schema: registration appends to the GLOBALLY sequenced
-/// kt_leaves (leaf index = seq - 1, ADR-0001 §4), so a test must own its
-/// sequence — see kt_persistence.rs for the failure this prevents.
-async fn fresh_pool() -> PgPool {
+/// Connect and migrate in a THROWAWAY per-test database. Registration
+/// appends to the GLOBALLY sequenced kt_leaves (leaf index = seq - 1,
+/// ADR-0001 §4), so a test must own its sequence — see kt_persistence.rs
+/// for the failure this prevents. The canonical runner pins search_path to
+/// public (ADR-0006 §1), so the pre-ADR-0006 per-test SCHEMA isolation no
+/// longer applies; a fresh DATABASE per case is the same philosophy (never
+/// TRUNCATE) through the one canonical entry point.
+struct TestDb {
+    name: String,
+    admin: PgPool,
+}
+
+impl TestDb {
+    async fn teardown(self) {
+        // WITH (FORCE) disconnects stragglers (PG13+). A panicked test leaks
+        // its database — acceptable: CI's postgres is ephemeral per job and
+        // names are unique per case.
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)",
+            self.name
+        ))
+        .execute(&self.admin)
+        .await
+        .expect("drop test database");
+    }
+}
+
+async fn fresh_pool() -> (TestDb, PgPool) {
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
-    let schema = format!("t_{}", AccountId::new().as_uuid().simple());
-    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+    let name = format!("citadel_t_{}", AccountId::new().as_uuid().simple());
+    sqlx::query(&format!("CREATE DATABASE \"{name}\""))
         .execute(&admin)
         .await
-        .expect("create per-test schema");
+        .expect("create per-test database");
 
+    let base = db_url()
+        .rsplit_once('/')
+        .map(|(b, _)| b.to_string())
+        .expect("DATABASE_URL must end in a database name");
     let pool = PgPoolOptions::new()
         .max_connections(8)
-        .after_connect(move |conn, _meta| {
-            let schema = schema.clone();
-            Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO \"{schema}\""))
-                    .execute(conn)
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&db_url())
+        .connect(&format!("{base}/{name}"))
         .await
-        .expect("connect to real PostgreSQL (CI provisions it)");
+        .expect("connect to per-test database");
     citadel_migrations::migrate(&pool)
         .await
         .expect("apply canonical migrations (ADR-0006)");
-    pool
+    (TestDb { name, admin }, pool)
 }
 
 fn now_epoch() -> i64 {
@@ -210,7 +229,7 @@ async fn device_row_count(pool: &PgPool, device: DeviceId) -> i64 {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn enroll_second_device_succeeds_then_authenticates() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let router = app(&pool);
     let fx = setup_account(router.clone(), &pool, 0x10).await;
 
@@ -251,6 +270,7 @@ async fn enroll_second_device_succeeds_then_authenticates() {
     .await
     .unwrap();
     assert_eq!(active, 2);
+    db.teardown().await;
 }
 
 /// ADR-0004 Evidence: absent / expired / revoked token → `unauthorized`;
@@ -258,7 +278,7 @@ async fn enroll_second_device_succeeds_then_authenticates() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn enroll_requires_valid_bearer_token() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let router = app(&pool);
     let fx = setup_account(router.clone(), &pool, 0x20).await;
 
@@ -315,6 +335,7 @@ async fn enroll_requires_valid_bearer_token() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     assert_eq!(device_row_count(&pool, device_b).await, 0);
+    db.teardown().await;
 }
 
 /// ADR-0004 Evidence: a credential not signed by the account identity key
@@ -322,7 +343,7 @@ async fn enroll_requires_valid_bearer_token() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn enroll_rejects_bad_identity_signature() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let router = app(&pool);
     let fx = setup_account(router.clone(), &pool, 0x30).await;
 
@@ -360,6 +381,7 @@ async fn enroll_rejects_bad_identity_signature() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(err.code, ErrorCode::Unauthorized);
     assert_eq!(device_row_count(&pool, device_b).await, 0);
+    db.teardown().await;
 }
 
 /// ADR-0004 Evidence: `credential.tbs.identity_pubkey` ≠ the account's
@@ -367,7 +389,7 @@ async fn enroll_rejects_bad_identity_signature() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn enroll_rejects_identity_pubkey_mismatch() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let router = app(&pool);
     let fx = setup_account(router.clone(), &pool, 0x40).await;
 
@@ -405,6 +427,7 @@ async fn enroll_rejects_identity_pubkey_mismatch() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(err.code, ErrorCode::Unauthorized);
     assert_eq!(device_row_count(&pool, device_b).await, 0);
+    db.teardown().await;
 }
 
 /// ADR-0004 Evidence: endorsement by a device of another account, or
@@ -413,7 +436,7 @@ async fn enroll_rejects_identity_pubkey_mismatch() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn enroll_rejects_foreign_or_mismatched_endorsement() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let router = app(&pool);
     let fx = setup_account(router.clone(), &pool, 0x50).await;
     let foreign = setup_account(router.clone(), &pool, 0x58).await;
@@ -473,6 +496,7 @@ async fn enroll_rejects_foreign_or_mismatched_endorsement() {
     assert_eq!(err.code, ErrorCode::Forbidden);
 
     assert_eq!(device_row_count(&pool, device_b).await, 0);
+    db.teardown().await;
 }
 
 /// ADR-0004 Evidence: replay of a completed enrollment → `conflict` (409);
@@ -480,7 +504,7 @@ async fn enroll_rejects_foreign_or_mismatched_endorsement() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn enroll_rejects_duplicate_device_id() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let router = app(&pool);
     let fx = setup_account(router.clone(), &pool, 0x60).await;
 
@@ -509,6 +533,7 @@ async fn enroll_rejects_duplicate_device_id() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(err.code, ErrorCode::Conflict);
     assert_eq!(device_row_count(&pool, device_b).await, 1);
+    db.teardown().await;
 }
 
 /// ADR-0004 Evidence: enrollment does not grow the KT log (§"KT log") —
@@ -516,7 +541,7 @@ async fn enroll_rejects_duplicate_device_id() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn enroll_does_not_grow_kt_log() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let router = app(&pool);
     let fx = setup_account(router.clone(), &pool, 0x70).await;
 
@@ -554,4 +579,5 @@ async fn enroll_does_not_grow_kt_log() {
 
     let after = get_tree_size(router).await;
     assert_eq!(before, after, "enrollment must not append to the KT log");
+    db.teardown().await;
 }
