@@ -1,15 +1,14 @@
-//! Delivery service stub (M0).
+//! Delivery service binary.
 //!
-//! MLS commit sequencing, fanout, and external-sender proposals land in M2–M3.
-//! INV-6 (one commit per epoch) will be enforced here; no crypto in this crate.
+//! Connects to PostgreSQL (DATABASE_URL is required — a service without its
+//! store is useless, and missing infrastructure must fail loudly, PLAN.md
+//! §13), then serves the router: the M2 message path and the WS gateway
+//! (ADR-0005). The service applies NO migrations at startup: schema changes
+//! are the canonical citadel-migrate job's exclusive authority (ADR-0006 §1).
 
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
-use serde_json::{json, Value};
+use delivery_service::server::{self, AppState};
+use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
-use tower_http::trace::TraceLayer;
 use tracing::info;
 
 const SERVICE_NAME: &str = "delivery-service";
@@ -19,16 +18,21 @@ const DEFAULT_PORT: u16 = 8082;
 async fn main() {
     init_tracing();
 
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL is required; delivery-service serves nothing without its store");
+    let pool = PgPoolOptions::new()
+        .max_connections(16)
+        .connect(&database_url)
+        .await
+        .expect("connect to PostgreSQL");
+
     let port = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_PORT);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/ready", get(ready))
-        .layer(TraceLayer::new_for_http());
+    let app = server::router(AppState::new(pool));
 
     info!(%addr, service = SERVICE_NAME, "listening");
     let listener = tokio::net::TcpListener::bind(addr)
@@ -39,22 +43,6 @@ async fn main() {
         .expect("serve delivery-service");
 }
 
-async fn health() -> impl IntoResponse {
-    (StatusCode::OK, Json(health_body()))
-}
-
-async fn ready() -> impl IntoResponse {
-    (StatusCode::OK, Json(health_body()))
-}
-
-fn health_body() -> Value {
-    json!({
-        "status": "ok",
-        "service": SERVICE_NAME,
-        "version": env!("CARGO_PKG_VERSION"),
-    })
-}
-
 fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -62,16 +50,4 @@ fn init_tracing() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn health_body_names_service() {
-        let body = health_body();
-        assert_eq!(body["service"], SERVICE_NAME);
-        assert_eq!(body["status"], "ok");
-    }
 }

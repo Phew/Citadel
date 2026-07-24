@@ -58,6 +58,12 @@ dev: up wait-healthy
 wait-healthy:
     cargo run -p test-harness --bin wait-healthy -- --timeout-secs 120
 
+# Apply the canonical migrations to the dev database (ADR-0006). Required
+# before running services OUTSIDE Compose — services no longer self-migrate
+# at startup. Uses DATABASE_URL from .env (set dotenv-load above).
+migrate:
+    cargo run -p citadel-migrations --bin citadel-migrate
+
 # Status of compose services.
 ps:
     docker compose -f deploy/docker-compose.yml ps

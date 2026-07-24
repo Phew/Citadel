@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use auth_service::auth;
 use auth_service::server::{self, AppState, KtState};
-use auth_service::store;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
@@ -41,38 +40,58 @@ fn db_url() -> String {
     )
 }
 
-/// Connect and migrate in a per-test schema. Registration appends to the
-/// GLOBALLY sequenced kt_leaves (leaf index = seq - 1, ADR-0001 §4), so a
-/// test must own its sequence — see kt_persistence.rs for the failure this
-/// prevents. Isolation is a fresh schema per case, never TRUNCATE.
-async fn fresh_pool() -> PgPool {
+/// Connect and migrate in a THROWAWAY per-test database. Registration
+/// appends to the GLOBALLY sequenced kt_leaves (leaf index = seq - 1,
+/// ADR-0001 §4), so a test must own its sequence — see kt_persistence.rs
+/// for the failure this prevents. The canonical runner pins search_path to
+/// public (ADR-0006 §1), so the pre-ADR-0006 per-test SCHEMA isolation no
+/// longer applies; a fresh DATABASE per case is the same philosophy (never
+/// TRUNCATE) through the one canonical entry point.
+struct TestDb {
+    name: String,
+    admin: PgPool,
+}
+
+impl TestDb {
+    async fn teardown(self) {
+        // WITH (FORCE) disconnects stragglers (PG13+). A panicked test leaks
+        // its database — acceptable: CI's postgres is ephemeral per job and
+        // names are unique per case.
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)",
+            self.name
+        ))
+        .execute(&self.admin)
+        .await
+        .expect("drop test database");
+    }
+}
+
+async fn fresh_pool() -> (TestDb, PgPool) {
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
-    let schema = format!("t_{}", AccountId::new().as_uuid().simple());
-    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+    let name = format!("citadel_t_{}", AccountId::new().as_uuid().simple());
+    sqlx::query(&format!("CREATE DATABASE \"{name}\""))
         .execute(&admin)
         .await
-        .expect("create per-test schema");
+        .expect("create per-test database");
 
+    let base = db_url()
+        .rsplit_once('/')
+        .map(|(b, _)| b.to_string())
+        .expect("DATABASE_URL must end in a database name");
     let pool = PgPoolOptions::new()
         .max_connections(8)
-        .after_connect(move |conn, _meta| {
-            let schema = schema.clone();
-            Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO \"{schema}\""))
-                    .execute(conn)
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&db_url())
+        .connect(&format!("{base}/{name}"))
         .await
-        .expect("connect to real PostgreSQL (CI provisions it)");
-    store::migrate(&pool).await.expect("apply migrations");
-    pool
+        .expect("connect to per-test database");
+    citadel_migrations::migrate(&pool)
+        .await
+        .expect("apply canonical migrations (ADR-0006)");
+    (TestDb { name, admin }, pool)
 }
 
 fn now_epoch() -> i64 {
@@ -184,7 +203,7 @@ async fn issue_token(pool: &PgPool, device: DeviceId, device_key: &TestSigner) -
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn registration_rejects_long_handles() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let (router, _kt) = app(&pool);
 
     for bad in ["h".repeat(65), String::new()] {
@@ -206,6 +225,7 @@ async fn registration_rejects_long_handles() {
         reg.response.kt_tree_head.tbs.tree_size,
         reg.response.kt_leaf_index + 1
     );
+    db.teardown().await;
 }
 
 /// Registration is atomic with the KT append (ADR-0001 §4(b)): the
@@ -214,7 +234,7 @@ async fn registration_rejects_long_handles() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn registration_appends_kt_leaf_atomically() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let (router, _kt) = app(&pool);
     let handle = "atomic-alice";
     let identity = TestSigner::from_seed([0x20; 32]);
@@ -299,13 +319,14 @@ async fn registration_appends_kt_leaf_atomically() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(err.code, ErrorCode::Conflict);
+    db.teardown().await;
 }
 
 /// ADR-0003 Evidence: a 101-package publish is `invalid_request`.
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn publish_rejects_oversized_batch() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let (router, _kt) = app(&pool);
     let packages: Vec<String> = (0..101)
         .map(|i| base64::engine::general_purpose::STANDARD.encode(format!("pkg-{i}")))
@@ -322,6 +343,7 @@ async fn publish_rejects_oversized_batch() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(err.code, ErrorCode::InvalidRequest);
+    db.teardown().await;
 }
 
 /// Pool endpoints end to end: publish (self only, bearer auth), consuming
@@ -329,7 +351,7 @@ async fn publish_rejects_oversized_batch() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn publish_fetch_roundtrip_and_all_or_nothing() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let (router, _kt) = app(&pool);
     let reg = register_ok(router.clone(), 0x30, "pool-owner").await;
     let token = issue_token(&pool, reg.device, &reg.device_key).await;
@@ -416,4 +438,5 @@ async fn publish_fetch_roundtrip_and_all_or_nothing() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(err.code, ErrorCode::KeyPackageUnavailable);
+    db.teardown().await;
 }

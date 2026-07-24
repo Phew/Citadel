@@ -1,6 +1,6 @@
 [package]
 name = "delivery-service"
-description = "MLS delivery service: commit sequencing and fanout (stub in M0)"
+description = "MLS delivery service: ciphertext store, commit sequencing, WS fanout gateway (ADR-0005)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,10 +12,35 @@ path = "src/main.rs"
 
 [dependencies]
 citadel-proto = { workspace = true }
-axum = { workspace = true }
+# Facade only, and only for sha256 in bearer-token validation (ADR-0003 §3,
+# AGENTS.md rule 6). The message path itself needs no cryptography: it
+# stores and forwards opaque bytes (ADR-0005 §2, INV-1).
+citadel-service-crypto = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tower-http = { workspace = true }
+thiserror = { workspace = true }
+# Token wire encoding is base64url no-pad (ADR-0003 §2); message payloads
+# are standard base64 (citadel-proto::envelope).
+base64 = { workspace = true }
+# Split the axum WebSocket into sink/stream halves for the gateway select loop.
+futures-util = "0.3"
+# Row/insert binding for the UUID columns (sqlx "uuid" feature).
+uuid = { workspace = true }
+# Service state lives in PostgreSQL via sqlx (PLAN.md §4). The service never
+# migrates: the canonical corpus and runner live in citadel-migrations
+# (ADR-0006), which is the ONLY crate allowed sqlx's `migrate` feature.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "macros"] }
+
+[dev-dependencies]
+# Database tests initialize through the SAME canonical entry point as the
+# production migration job (ADR-0006 §1: test and production schema
+# construction cannot drift).
+citadel-migrations = { path = "../citadel-migrations" }
+# Property tests (PLAN.md §10): gap-free seq under random concurrent
+# submits, against real PostgreSQL in the CI db-tests job.
+proptest = "1"

@@ -1,0 +1,31 @@
+[package]
+name = "citadel-migrations"
+description = "Canonical migration corpus + runner for the shared database (ADR-0006)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "citadel_migrations"
+path = "src/lib.rs"
+
+[[bin]]
+name = "citadel-migrate"
+path = "src/bin/citadel_migrate.rs"
+
+[dependencies]
+# The ONLY crate in the workspace that declares sqlx's `migrate` feature
+# (ADR-0006 §1: one canonical corpus, one production migrator;
+# ci/check_migrations.py enforces this).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate", "macros"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# Throwaway-database names for the PG16 evidence tests.
+uuid = { workspace = true }

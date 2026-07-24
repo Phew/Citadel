@@ -15,9 +15,10 @@
 //! (plaintext-handling bug); 2 = scan could not prove itself (infra down,
 //! injection failed, control missed, or zero evidence coverage).
 //!
-//! Injection points cover the paths that exist in M1. Every new endpoint
-//! that accepts client data MUST add an injection point here (see
-//! docs/backlog.md for the M2+ message-path extension).
+//! Injection points cover the paths that exist in M1+M2 (M2: the
+//! delivery-service message path, ADR-0005 — including an authenticated
+//! probe that must die in `SubmitMessageRequest::validate`). Every new
+//! endpoint that accepts client data MUST add an injection point here.
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
@@ -68,7 +69,13 @@ async fn inject(args: &[String]) -> Result<()> {
     let http = probe_client()?;
     let endpoints = require_stack(&http).await?;
 
-    let points = injection_points(&endpoints);
+    // The authenticated message-path probe needs a real bearer token (the
+    // submit endpoint validates auth before the body): register a throwaway
+    // account/device and run the ADR-0003 §1–§2 flow. If this fails the run
+    // is unproven, matching the fail-loudly convention.
+    let delivery_token = delivery_probe_token(&http, &endpoints.auth).await?;
+
+    let points = injection_points(&endpoints, &delivery_token);
     let run_id = uuid::Uuid::new_v4().simple().to_string();
     let values = canary::generate(&run_id, points.len());
     let mut records = Vec::new();
@@ -88,6 +95,19 @@ async fn inject(args: &[String]) -> Result<()> {
             }
             Probe::PostJson { base, path, body } => http
                 .post(format!("{base}{path}"))
+                .json(&body(&value))
+                .send()
+                .await
+                .with_context(|| format!("inject canary into {point}"))?
+                .status(),
+            Probe::PostJsonAuthed {
+                base,
+                path,
+                body,
+                token,
+            } => http
+                .post(format!("{base}{path}"))
+                .bearer_auth(token)
                 .json(&body(&value))
                 .send()
                 .await
@@ -135,6 +155,15 @@ enum Probe {
         path: &'static str,
         body: fn(&str) -> serde_json::Value,
     },
+    /// Same as PostJson, but with a bearer token so the probe passes the
+    /// endpoint's auth check and exercises what lies BEHIND it (the M2
+    /// submit path's validation).
+    PostJsonAuthed {
+        base: String,
+        path: &'static str,
+        body: fn(&str) -> serde_json::Value,
+        token: String,
+    },
     GetHeader {
         base: String,
         path: &'static str,
@@ -145,7 +174,10 @@ enum Probe {
 /// bodies and headers ONLY: paths and query strings are request metadata
 /// that standard middleware legitimately logs, so they are never canary
 /// channels (a hit there would be a false positive by design).
-fn injection_points(endpoints: &StackEndpoints) -> Vec<(String, Probe)> {
+///
+/// `delivery_token` is a real bearer token (see `delivery_probe_token`) for
+/// the probe that must pass the submit endpoint's auth gate.
+fn injection_points(endpoints: &StackEndpoints, delivery_token: &str) -> Vec<(String, Probe)> {
     let mut points = Vec::new();
     for (name, base) in endpoints.all() {
         points.push((
@@ -255,7 +287,118 @@ fn injection_points(endpoints: &StackEndpoints) -> Vec<(String, Probe)> {
             },
         },
     ));
+
+    // M2 delivery-service message path (ADR-0005; the no-plaintext canary
+    // extends to group_messages/welcome_deliveries, ADR-0005 §2). Both
+    // variants are rejected BEFORE the store layer, so a correct server
+    // yields zero DB hits for them: the authenticated probe dies in
+    // `SubmitMessageRequest::validate` (a pre-assigned seq is the server's
+    // job, never the client's), the unauthenticated one at the 401 auth
+    // gate. Only sloppy request-body logging could leak either canary.
+    let delivery = endpoints.delivery.to_string();
+    points.push((
+        "delivery-service POST /v1/groups/<nil>/messages (pre-assigned seq, validate() rejects)"
+            .to_string(),
+        Probe::PostJsonAuthed {
+            base: delivery.clone(),
+            path: SUBMIT_PROBE_PATH,
+            body: submit_probe_body,
+            token: delivery_token.to_string(),
+        },
+    ));
+    points.push((
+        "delivery-service POST /v1/groups/<nil>/messages (unauthenticated, 401)".to_string(),
+        Probe::PostJson {
+            base: delivery,
+            path: SUBMIT_PROBE_PATH,
+            body: submit_probe_body,
+        },
+    ));
     points
+}
+
+/// The message-path probe path: a fixed nil group id keeps the path static
+/// and query-free (canaries travel in bodies/headers only).
+const SUBMIT_PROBE_PATH: &str = "/v1/groups/00000000-0000-0000-0000-000000000000/messages";
+
+/// The message-path probe body (ADR-0005 §1): a SubmitMessageRequest whose
+/// envelope carries a PRE-ASSIGNED seq, so `SubmitMessageRequest::validate`
+/// MUST reject it with invalid_request before the store layer — the canary
+/// riding `payload_b64` may then provably appear nowhere server-side.
+fn submit_probe_body(canary: &str) -> serde_json::Value {
+    serde_json::json!({
+        "envelope": {
+            "version": 1,
+            "kind": "application",
+            "group_id": uuid::Uuid::nil(),
+            "epoch": 0,
+            "seq": 7,
+            "payload_b64": base64::engine::general_purpose::STANDARD.encode(canary),
+        },
+        "idempotency_key": uuid::Uuid::nil(),
+    })
+}
+
+/// Register a throwaway account + first device and authenticate it
+/// (ADR-0003 §1–§2, §6), so the authenticated message-path probe passes the
+/// submit endpoint's auth gate and reaches the validation that must reject
+/// it. Without this token the authenticated probe would be a second
+/// unauthenticated probe and prove nothing new.
+async fn delivery_probe_token(http: &reqwest::Client, auth_base: &str) -> Result<String> {
+    use citadel_proto::auth::{
+        challenge_signing_input, ChallengeRequest, ChallengeResponse, RegisterAccountRequest,
+        RegisterAccountResponse, VerifyRequest, VerifyResponse,
+    };
+    use citadel_proto::credential::{
+        DeviceCredential, DeviceCredentialTbs, DevicePublicKey, IdentityPublicKey, Signature,
+    };
+    use citadel_proto::ids::{AccountId, DeviceId};
+    use test_harness::client::TestClient;
+    use test_harness::testkeys::TestSigner;
+
+    let client = TestClient::new(http.clone(), auth_base);
+    let identity = TestSigner::from_seed([0xD1; 32]);
+    let device_key = TestSigner::from_seed([0xD2; 32]);
+    let tbs = DeviceCredentialTbs {
+        account_id: AccountId::new(),
+        device_id: DeviceId::new(),
+        identity_pubkey: IdentityPublicKey(identity.public_key()),
+        device_pubkey: DevicePublicKey(device_key.public_key()),
+        issued_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_secs() as i64,
+    };
+    let signature = Signature(identity.sign(&tbs.signing_input()));
+    let req = RegisterAccountRequest {
+        handle: format!("canary-probe-{}", uuid::Uuid::new_v4().simple()),
+        identity_pubkey: tbs.identity_pubkey,
+        first_device: DeviceCredential { tbs, signature },
+    };
+    let resp = client
+        .post_json::<_, RegisterAccountResponse>("/v1/accounts", &req)
+        .await
+        .map_err(|e| anyhow::anyhow!("register canary-probe account: {e}"))?;
+    let device_id = resp.device_id;
+
+    let challenge = client
+        .post_json::<_, ChallengeResponse>("/v1/auth/challenge", &ChallengeRequest { device_id })
+        .await
+        .map_err(|e| anyhow::anyhow!("canary-probe challenge: {e}"))?;
+    let verify = client
+        .post_json::<_, VerifyResponse>(
+            "/v1/auth/verify",
+            &VerifyRequest {
+                device_id,
+                challenge: challenge.challenge.clone(),
+                signature: Signature(
+                    device_key.sign(&challenge_signing_input(device_id, &challenge.challenge)),
+                ),
+            },
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("canary-probe verify: {e}"))?;
+    Ok(verify.token)
 }
 
 // ---------- verify ----------
@@ -452,11 +595,12 @@ mod tests {
 
     #[test]
     fn injection_points_cover_every_service_twice_with_unique_names() {
-        let points = injection_points(&endpoints());
+        let points = injection_points(&endpoints(), "test-token");
         assert_eq!(
             points.len(),
-            12,
-            "4 services x 2 probes (body, header) + 4 auth-service endpoint probes"
+            14,
+            "4 services x 2 probes (body, header) + 4 auth-service endpoint probes \
+             + 2 delivery-service message-path probes (ADR-0005)"
         );
         let mut names: Vec<&str> = points.iter().map(|(n, _)| n.as_str()).collect();
         names.sort_unstable();
@@ -474,10 +618,11 @@ mod tests {
         // Paths/query strings are request metadata that standard middleware
         // legitimately logs (TraceLayer), so a canary there makes the scan
         // report a false violation. Paths must stay static and query-free.
-        for (name, probe) in injection_points(&endpoints()) {
+        for (name, probe) in injection_points(&endpoints(), "test-token") {
             let (base, path) = match &probe {
                 Probe::PostBody { base, path } => (base, path),
                 Probe::PostJson { base, path, .. } => (base, path),
+                Probe::PostJsonAuthed { base, path, .. } => (base, path),
                 Probe::GetHeader { base, path } => (base, path),
             };
             assert!(
@@ -497,6 +642,7 @@ mod tests {
                         | "/v1/auth/verify"
                         | "/v1/devices"
                         | "/v1/devices/00000000-0000-0000-0000-000000000000/key-packages"
+                        | "/v1/groups/00000000-0000-0000-0000-000000000000/messages"
                 ),
                 "{name}: unexpected path {path}; new injection points extend this test"
             );
@@ -506,18 +652,21 @@ mod tests {
     #[test]
     fn endpoint_probe_bodies_embed_the_canary_where_rejection_is_required() {
         // The registration canary's handle must exceed ADR-0003 §6's 64-byte
-        // cap; the publish probe must exceed §4's 100-package cap. If either
+        // cap; the publish probe must exceed §4's 100-package cap; the
+        // message-path probe's envelope must carry a pre-assigned seq so
+        // SubmitMessageRequest::validate rejects it (ADR-0005 §1). If any
         // invariant breaks, the canary could be legitimately stored and the
         // scan would false-positive — fail here instead.
-        let points = injection_points(&endpoints());
+        let points = injection_points(&endpoints(), "test-token");
         let bodies: Vec<serde_json::Value> = points
             .iter()
             .filter_map(|(_, p)| match p {
                 Probe::PostJson { body, .. } => Some(body("CITADEL-CANARY-test-0001")),
+                Probe::PostJsonAuthed { body, .. } => Some(body("CITADEL-CANARY-test-0001")),
                 _ => None,
             })
             .collect();
-        assert_eq!(bodies.len(), 4);
+        assert_eq!(bodies.len(), 6);
         for body in &bodies {
             if let Some(handle) = body.get("handle") {
                 assert!(
@@ -529,6 +678,12 @@ mod tests {
                 assert!(
                     packages.as_array().unwrap().len() > 100,
                     "publish canary must force the ADR-0003 §4 rejection"
+                );
+            }
+            if let Some(envelope) = body.get("envelope") {
+                assert!(
+                    envelope.get("seq").is_some_and(|s| s.is_number()),
+                    "submit canary must force the ADR-0005 §1 validate() rejection"
                 );
             }
         }
