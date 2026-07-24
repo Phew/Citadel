@@ -705,3 +705,228 @@ async fn canonical_migration_preflight_runs_under_migration_lock() {
     drop(pool);
     db.teardown().await;
 }
+
+// ---------- Exit-path cleanup evidence (Sol re-review of #39) ----------
+//
+// sqlx-core 0.8.6 run_direct takes its advisory lock at entry but unlocks
+// only on the success path; every `?` in between (Dirty, VersionMismatch,
+// ensure_migrations_table, a failing migration) returns with that
+// acquisition still held. A dropped PoolConnection returns to the pool
+// WITHOUT a session reset (pool/connection.rs return_to_pool), so the
+// leaked hold — and the runner's SET search_path/lock_timeout/
+// statement_timeout — would persist on the pooled connection. The runner
+// now releases unconditionally on the way out (pg_advisory_unlock_all +
+// RESET), and closes the connection instead on the tokio backstop. These
+// tests are the evidence; each one fails against the pre-fix runner.
+
+/// Advisory locks held by ANY backend of the current (throwaway) database.
+async fn advisory_locks_held(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks \
+         WHERE locktype = 'advisory' \
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count advisory locks")
+}
+
+/// (search_path, lock_timeout, statement_timeout) as one session sees them.
+async fn session_settings(pool: &PgPool) -> (String, String, String) {
+    let sp: String = sqlx::query_scalar("SHOW search_path")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let lt: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let st: String = sqlx::query_scalar("SHOW statement_timeout")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    (sp, lt, st)
+}
+
+/// ERROR PATH: a failing migration (run_direct error under the lock) must
+/// leave no advisory hold and no session settings behind, and a follow-up
+/// runner on a DIFFERENT pooled connection must succeed rather than block
+/// to lock_timeout.
+#[tokio::test]
+#[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
+async fn canonical_migration_error_path_releases_lock_and_settings() {
+    let db = TestDb::create().await;
+    // A pristine session, only to read the server's default settings.
+    let fresh = db.pool(1).await;
+    let defaults = session_settings(&fresh).await;
+
+    let pool = db.pool(2).await;
+    // Sabotage: 0001 CREATE TABLE accounts fails mid-run — AFTER sqlx's
+    // run_direct took its advisory hold — so the exercised error path is
+    // run_direct's, not the preflight's.
+    sqlx::query("CREATE TABLE public.accounts (id UUID PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let err = citadel_migrations::migrate_with_bounds(&pool, 2, 300)
+        .await
+        .expect_err("a conflicting table must fail the run");
+    assert!(
+        matches!(err, citadel_migrations::MigrateError::Sqlx(_)),
+        "expected a run_direct (sqlx) failure, got {err:?}"
+    );
+
+    // Direct leak evidence: zero advisory holds survive in this database.
+    // (Pre-fix: sqlx's unleashed run_direct hold persists here.)
+    assert_eq!(
+        advisory_locks_held(&fresh).await,
+        0,
+        "an advisory lock leaked onto the failed session"
+    );
+
+    // The failed session is back in the pool; pin it out and prove it
+    // carries none of the migration session settings.
+    let mut pinned = pool.acquire().await.expect("pin the failed session");
+    let sp: String = sqlx::query_scalar("SHOW search_path")
+        .fetch_one(&mut *pinned)
+        .await
+        .unwrap();
+    let lt: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(&mut *pinned)
+        .await
+        .unwrap();
+    let st: String = sqlx::query_scalar("SHOW statement_timeout")
+        .fetch_one(&mut *pinned)
+        .await
+        .unwrap();
+    assert_eq!(
+        (sp, lt, st),
+        defaults,
+        "session settings leaked onto the pooled connection"
+    );
+
+    // Functional evidence: with the failed connection pinned out of the
+    // pool, the follow-up runner MUST land on a different pooled
+    // connection. A leaked hold on the failed session would block this run
+    // to lock_timeout (the exact pre-fix failure shape, silently and only
+    // sometimes); here it must simply succeed.
+    sqlx::query("DROP TABLE public.accounts")
+        .execute(&fresh)
+        .await
+        .unwrap();
+    citadel_migrations::migrate_with_bounds(&pool, 5, 300)
+        .await
+        .expect("migrate on a different pooled connection must not block on a leaked lock");
+    assert_eq!(history_versions(&fresh).await, CORPUS_HEAD);
+
+    drop(pinned);
+    drop(pool);
+    drop(fresh);
+    db.teardown().await;
+}
+
+/// CANCELLATION PATH: the tokio backstop drops run_direct mid-flight; the
+/// runner must not return the poisoned connection to the pool, and no
+/// advisory hold may survive once the cancelled backend is gone.
+#[tokio::test]
+#[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
+async fn canonical_migration_backstop_cancellation_releases_lock() {
+    let db = TestDb::create().await;
+
+    // Pre-0004 state (schema + history 0001–0003) so one migration is
+    // pending when the cancelled run starts.
+    let setup = db.pool(2).await;
+    sqlx::raw_sql(include_str!("fixtures/pre_0004.sql"))
+        .execute(&setup)
+        .await
+        .expect("apply pre-0004 fixture");
+    assert_eq!(history_versions(&setup).await, [1, 2, 3]);
+
+    // A second session holds SHARE on the history table: the preflight's
+    // ACCESS SHARE reads pass, but run_direct's INSERT of the 0004 history
+    // row (ROW EXCLUSIVE) blocks — inside the apply, under sqlx's advisory
+    // hold, with no lock-wait error because lock_timeout is set high. Only
+    // the tokio backstop can end this run.
+    let blocker = db.pool(1).await;
+    let mut btx = blocker.begin().await.unwrap();
+    sqlx::query("LOCK TABLE public._sqlx_migrations IN SHARE MODE")
+        .execute(&mut *btx)
+        .await
+        .unwrap();
+
+    let pool = db.pool(2).await;
+    let err = citadel_migrations::migrate_with_backstop(
+        &pool,
+        30,
+        300,
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .expect_err("the backstop must cancel the blocked run");
+    assert!(
+        matches!(err, citadel_migrations::MigrateError::Timeout(_)),
+        "expected the tokio backstop, got {err:?}"
+    );
+
+    // Free the blocked INSERT; the cancelled backend can now notice its
+    // dead client and exit, releasing everything the session held.
+    drop(btx);
+    drop(blocker);
+
+    // The backend may take a moment to die; poll for the lock to go.
+    let mut released = false;
+    for _ in 0..40 {
+        if advisory_locks_held(&setup).await == 0 {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(
+        released,
+        "the cancelled run's advisory lock survived its backend"
+    );
+
+    // A subsequent runner succeeds: 0004 rolls forward and lands at head.
+    citadel_migrations::migrate_with_bounds(&pool, 10, 300)
+        .await
+        .expect("migrate after a cancelled run must not block on a leaked lock");
+    assert_eq!(history_versions(&setup).await, CORPUS_HEAD);
+
+    drop(pool);
+    drop(setup);
+    db.teardown().await;
+}
+
+/// SUCCESS PATH (companion defect): even a clean run pinned search_path,
+/// lock_timeout and statement_timeout on the session; those SETs must not
+/// survive the call onto the pooled connection.
+#[tokio::test]
+#[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
+async fn canonical_migration_success_leaves_no_session_state() {
+    let db = TestDb::create().await;
+    let fresh = db.pool(1).await;
+    let defaults = session_settings(&fresh).await;
+
+    // One connection: the migrator's session is exactly the one the SHOWs
+    // below interrogate. (Pre-fix: all three SETs leak here, and the two
+    // looser timeouts would mask hangs in unrelated reusing queries.)
+    let pool = db.pool(1).await;
+    citadel_migrations::migrate(&pool).await.expect("apply");
+
+    assert_eq!(
+        session_settings(&pool).await,
+        defaults,
+        "the migration session settings survived the call"
+    );
+    assert_eq!(
+        advisory_locks_held(&pool).await,
+        0,
+        "an advisory lock survived a successful run"
+    );
+
+    drop(pool);
+    drop(fresh);
+    db.teardown().await;
+}

@@ -24,6 +24,13 @@
 //!   (`statement_timeout`), plus a tokio backstop over the whole run. A
 //!   timeout is fatal; a second runner behind a held lock fails closed
 //!   instead of hanging.
+//! - Exit cleanup is unconditional: `pg_advisory_unlock_all()` plus
+//!   `RESET` of every session setting on success AND error alike
+//!   (sqlx's `run_direct` leaks its advisory hold on every error path,
+//!   and pooled connections return without a session reset); on the
+//!   tokio backstop the mid-flight connection is closed instead, since
+//!   no SQL can be trusted on it. A connection never returns to the pool
+//!   carrying a lock or a setting.
 
 use serde::Deserialize;
 use sqlx::migrate::Migrator;
@@ -77,6 +84,20 @@ pub async fn migrate(pool: &PgPool) -> Result<(), MigrateError> {
     migrate_with_bounds(pool, LOCK_TIMEOUT_SECS, MIGRATION_STATEMENT_TIMEOUT_SECS).await
 }
 
+/// The margin added to the statement-level bounds when computing the
+/// tokio backstop over the whole run.
+const BACKSTOP_MARGIN_SECS: u64 = 60;
+
+/// The tokio backstop over the whole apply: lock bound + per-migration
+/// bounds + margin. The statement-level settings are the primary
+/// mechanism; this is fail-closed defense in depth.
+fn overall_backstop(lock_timeout_secs: u64, statement_timeout_secs: u64) -> Duration {
+    let n_migrations = MIGRATOR.migrations.len() as u64;
+    Duration::from_secs(
+        lock_timeout_secs + statement_timeout_secs * n_migrations + BACKSTOP_MARGIN_SECS,
+    )
+}
+
 /// [`migrate`] with explicit bounds. The 60s/300s defaults are pinned by
 /// ADR-0006 §1; this seam exists so the lock-timeout evidence test can
 /// prove fail-closed behavior in seconds instead of a minute.
@@ -85,9 +106,87 @@ pub async fn migrate_with_bounds(
     lock_timeout_secs: u64,
     statement_timeout_secs: u64,
 ) -> Result<(), MigrateError> {
+    let backstop = overall_backstop(lock_timeout_secs, statement_timeout_secs);
+    migrate_inner(pool, lock_timeout_secs, statement_timeout_secs, backstop).await
+}
+
+/// [`migrate_with_bounds`] with an explicit tokio backstop. Hidden: it
+/// exists so the cancellation-path evidence test can fire the backstop in
+/// seconds instead of minutes. Production callers use [`migrate`] or
+/// [`migrate_with_bounds`], which compute the backstop from the ADR-0006
+/// §1 bounds.
+#[doc(hidden)]
+pub async fn migrate_with_backstop(
+    pool: &PgPool,
+    lock_timeout_secs: u64,
+    statement_timeout_secs: u64,
+    backstop: Duration,
+) -> Result<(), MigrateError> {
+    migrate_inner(pool, lock_timeout_secs, statement_timeout_secs, backstop).await
+}
+
+async fn migrate_inner(
+    pool: &PgPool,
+    lock_timeout_secs: u64,
+    statement_timeout_secs: u64,
+    backstop: Duration,
+) -> Result<(), MigrateError> {
     // One connection for everything: the session settings below must cover
     // the lock, the preflight, AND the migrator's own statements.
     let mut conn = pool.acquire().await?;
+
+    let run = run_on_connection(
+        &mut conn,
+        lock_timeout_secs,
+        statement_timeout_secs,
+        backstop,
+    )
+    .await;
+
+    // On the tokio backstop the run future was DROPPED mid-flight: a
+    // statement may still be executing server-side, so the connection's
+    // protocol state is untrustworthy and no cleanup SQL can be safely
+    // issued on it (it would queue behind the orphaned statement). Close
+    // the session instead: the dying backend releases every advisory lock
+    // and session setting it held, the poisoned connection never returns
+    // to the pool, and the server-side bounds (lock_timeout /
+    // statement_timeout) kill any orphaned statement within the ADR
+    // limits.
+    if matches!(run, Err(MigrateError::Timeout(_))) {
+        let _ = conn.close().await;
+        return run;
+    }
+
+    // Every other exit — success or error — cleans up unconditionally.
+    // sqlx's run_direct unlocks only on its success path (verified against
+    // sqlx-core 0.8.6 migrate/migrator.rs: every `?` after conn.lock()
+    // returns with that acquisition still held), and a dropped
+    // PoolConnection returns to the pool WITHOUT a session reset
+    // (pool/connection.rs return_to_pool), so a leaked hold or a leaked
+    // SET would persist on the pooled connection and poison its next
+    // tenant. pg_advisory_unlock_all() drops our hold AND any sqlx hold,
+    // however deeply nested; the RESETs restore the session defaults.
+    let cleanup = cleanup_session(&mut conn).await;
+    if cleanup.is_err() {
+        // A connection we cannot clean must not return to the pool
+        // carrying unknown state.
+        let _ = conn.close().await;
+    }
+    run?;
+    cleanup?;
+    Ok(())
+}
+
+/// The body of a migration run on one acquired connection: pin the session
+/// settings, take the migration lock, preflight under it, apply. Any error
+/// leaves cleanup to the caller (`migrate_inner`), which owns the
+/// connection's exit path.
+async fn run_on_connection(
+    conn: &mut PgConnection,
+    lock_timeout_secs: u64,
+    statement_timeout_secs: u64,
+    backstop: Duration,
+) -> Result<(), MigrateError> {
     sqlx::query(&format!("SET search_path TO {SEARCH_PATH}"))
         .execute(&mut *conn)
         .await?;
@@ -118,34 +217,33 @@ pub async fn migrate_with_bounds(
         .execute(&mut *conn)
         .await?;
 
-    let run = async {
-        preflight(&mut conn).await?;
+    preflight(conn).await?;
 
-        // Backstop over the apply: lock bound + per-migration bounds +
-        // margin. The statement-level settings are the primary mechanism.
-        // `run_direct` is sqlx's sanctioned path for a single
-        // already-acquired connection (`run` hits the Acquire "not general
-        // enough" limitation); it keeps the SAME connection, so the session
-        // settings above cover the migrator's lock and statements.
-        let n_migrations = MIGRATOR.migrations.len() as u64;
-        let overall =
-            Duration::from_secs(lock_timeout_secs + statement_timeout_secs * n_migrations + 60);
-        tokio::time::timeout(overall, MIGRATOR.run_direct(&mut *conn))
-            .await
-            .map_err(|_| MigrateError::Timeout(overall))??;
-        Ok::<(), MigrateError>(())
-    }
-    .await;
+    // `run_direct` is sqlx's sanctioned path for a single
+    // already-acquired connection (`run` hits the Acquire "not general
+    // enough" limitation); it keeps the SAME connection, so the session
+    // settings above cover the migrator's lock and statements.
+    tokio::time::timeout(backstop, MIGRATOR.run_direct(&mut *conn))
+        .await
+        .map_err(|_| MigrateError::Timeout(backstop))??;
+    Ok(())
+}
 
-    // Release our hold of the (re-entrant) lock on the live-connection
-    // path; a dead connection releases session locks on close. The run's
-    // own result takes precedence over an unlock error.
-    let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(lock_id)
+/// Unconditional exit-path cleanup (every non-cancellation outcome):
+/// release ALL advisory holds this session took — ours plus any sqlx
+/// `run_direct` leaked on an error path — and restore the session settings
+/// we pinned, so the pooled connection returns clean.
+async fn cleanup_session(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_unlock_all()")
         .execute(&mut *conn)
-        .await;
-    run?;
-    unlock?;
+        .await?;
+    sqlx::query("RESET lock_timeout")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("RESET statement_timeout")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("RESET search_path").execute(&mut *conn).await?;
     Ok(())
 }
 
