@@ -166,13 +166,18 @@ same canonical library entry point used by the binary, so production and test
 schema construction cannot drift.
 
 The canonical history is `public._sqlx_migrations`. The migration connection
-sets `search_path` to `pg_catalog, public, pg_temp`, placing PostgreSQL's
-otherwise first-searched temporary schema last, and custom preflight queries
-fully qualify the table. `CREATE` on schema `public` is revoked from `PUBLIC`;
-only the migration role can create schema objects there. A second migration
-history in another schema is a fatal configuration error, not an independent
-service history. Amendment 1 proposes replacing this ordering and remains
-non-binding until accepted.
+sets `search_path` to **`public, pg_temp`** (Amendment 1, ACCEPTED
+2026-07-23, which supersedes the `pg_catalog, public, pg_temp` ordering
+originally pinned here; that original ordering is retained only in Amendment 1's
+narrative as the disproved starting point). `pg_catalog` is deliberately
+unnamed so PostgreSQL searches it implicitly first for lookup, while `public`
+remains the first explicitly named schema and therefore the target of SQLx's
+unqualified `_sqlx_migrations` creation, and `pg_temp` named last preserves the
+temporary-schema hardening. The ordering `public, pg_catalog, pg_temp` is
+rejected — see Amendment 1. Custom preflight queries fully qualify the table.
+`CREATE` on schema `public` is revoked from `PUBLIC`; only the migration role
+can create schema objects there. A second migration history in another schema
+is a fatal configuration error, not an independent service history.
 
 The canonical SQLx `Migrator` keeps its default database locking and
 `ignore_missing = false`. Enabling `ignore_missing` anywhere in production code
