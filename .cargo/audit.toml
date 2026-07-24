@@ -12,4 +12,15 @@
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071",
+    # Revisit on any hpke-rs/OpenMLS backend or ciphersuite change.
+    # Unbuilt libcrux AES-GCM/ChaCha20-Poly1305 backends pulled into the
+    # lockfile by hpke-rs; Citadel builds the RustCrypto backends instead.
+    "RUSTSEC-2026-0209",
+    "RUSTSEC-2026-0211",
+    "RUSTSEC-2026-0124",
+    # Compiled libcrux SHA-3/SHAKE code is unreachable from Citadel's
+    # X25519/AES-128-GCM/SHA-256/Ed25519 ciphersuite.
+    "RUSTSEC-2026-0207",
+    "RUSTSEC-2026-0208",
+    "RUSTSEC-2026-0212",
 ]
