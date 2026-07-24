@@ -7,24 +7,61 @@ cross-review surfaced something green CI missed.
 
 ## Resume queue, in order
 
-1. **Sol re-reviews PR #39's two fix deltas.** #39 is READY, CI green (run 30071784448, all
-   five jobs pass). Head moved from 84dfa36 to c12a2a5 after shutdown; that delta is
-   docs-only (`docs/status/k3.md`, +60 lines) and does not touch the reviewed code. Both of
-   Sol's blocking findings were fixed and advisor-verified:
-   - preflight now runs UNDER the migration advisory lock (lock id `0x3d32ad9e*CRC32(db)`,
-     matches sqlx-postgres 0.8.6 so `run_direct` nests re-entrantly); evidence test
-     `canonical_migration_preflight_runs_under_migration_lock`.
-   - `ci/check_migrations.py` gained the `CANONICAL_SEARCH_PATH="public, pg_temp"` rule,
-     the inline-literal rule, `.set_locking(false)` coverage, and injected probes.
-   Sol's third finding (a "no-comments rule") was REJECTED — AGENTS.md rule 9 encourages
-   comments and supersedes any no-comments rule. Do not re-litigate.
-2. charge merges #39 (delivery-service + ADR-0006 migration CORE land).
-3. **K3 does a blocking review of PR #38** (citadel-core, READY at 7f2853f, CI green run
-   30064748560). #38 is the only substantial PR never independently reviewed (Opus wrote it,
-   Sol inherited and rebased). It is the plaintext boundary — review INV-4 KT-verified join,
-   INV-2 key handling, padding, INV-10. Reviewer pairing: Sol reviews K3's code, K3 reviews
-   Sol's code, never own code.
-4. charge merges #38.
+Both cross-reviews came back **CHANGES** on 2026-07-24. Three blocking findings, all three
+independently verified by the advisor against source (not taken on the reviewer's word).
+Each agent now fixes its **own** PR, so the two lanes run in parallel and neither blocks the
+other.
+
+1. **K3 fixes PR #39** — one blocking finding from Sol's review, CONFIRMED.
+   `MIGRATOR.run_direct` (sqlx-core 0.8.6 `migrate/migrator.rs`) calls `conn.lock()` at entry
+   but `conn.unlock()` only after every `?` early-return, so a Dirty version, a
+   VersionMismatch, an `ensure_migrations_table` failure, or any failing migration returns
+   with sqlx's acquisition still held. PostgreSQL session advisory locks need **one unlock per
+   acquisition**; our single `pg_advisory_unlock` releases only our own hold. The `tokio::time::timeout`
+   backstop is a second path to the same leak, since cancellation drops the future mid-run.
+   `migrate_with_bounds` uses `pool.acquire()`, and sqlx returns a dropped `PoolConnection` to
+   the pool without a reset, so the leaked lock **persists on a pooled connection** and blocks
+   later migrations that land on a different one.
+   Companion defect the advisor found while verifying, non-blocking but fix it in the same
+   pass: the same drop path leaks `search_path`, `lock_timeout`, and `statement_timeout` onto
+   the pooled connection on the **success** path too, and both timeouts leak *looser* than the
+   defaults, which would mask hangs in unrelated queries.
+   Do NOT reach for `locking = false` — `ci/check_migrations.py` bans it in both the field and
+   builder forms, correctly. Fix on the way out instead (`pg_advisory_unlock_all()` plus a
+   session reset, on success and error alike), and add evidence: force a migration error under
+   the lock, then prove a subsequent `migrate()` on a **different** connection succeeds rather
+   than blocking to `lock_timeout`. Cover the cancellation path too.
+   Sol's other two findings are closed: the `ci/check_migrations.py` fix PASSED re-review, and
+   the "no-comments rule" was REJECTED (AGENTS.md rule 9 encourages comments and supersedes any
+   no-comments rule). Do not re-litigate either.
+2. **Sol fixes PR #38** — two blocking findings from K3's review, both CONFIRMED.
+   - **INV-4 is one-sided.** `add_members` (`crates/citadel-core/src/group.rs`) takes
+     `key_packages: &[KeyPackage]` and passes them straight to `mls.add_members` with no KT
+     verification and no verifier parameter at all. Verification exists only on the join side.
+     That cannot cover the swapped-KeyPackage attack: the Welcome is encrypted to the
+     attacker's HPKE init key, so no honest client ever reaches the join check.
+     **ADR-0005 §5 explicitly places this on the initiator** ("The initiator, verifying every
+     member credential against the KT log before finalizing the group (INV-4), rejects it"),
+     so this is an ADR compliance violation, not a design preference. The engine must take the
+     verifier on the add path and abort creating no state.
+     Advisor addition: the test `join_rejects_non_kt_attested_member` is *documented* as
+     pinning the swapped-KeyPackage shape but actually asserts the opposite direction (B
+     rejecting A's credential). That false coverage claim is how the gap stayed invisible —
+     fix the comment and add a real initiator-side test.
+   - **`receive()` drops staged commits.** It matches only `ApplicationMessage` and returns
+     `NotApplication` for everything else; `merge_staged_commit`/`StagedCommit` appear nowhere
+     in `citadel-core`. The "handling those is M3" comment mis-scopes it: INV-6 *ordering* is
+     M3, but commit *processing* is load-bearing for the M2 exit AC, since both
+     `pcs_recover_after_update` and the forward-secrecy test drive a self-update commit through
+     this path. CI stays green only because the happy path uses `merge_pending_commit`.
+   What passed K3's review and should not be re-opened: padding is exactly ADR-0005 (buckets,
+   `u32-BE len || content || zero-pad`, pad-then-encrypt confirmed in `send()`/`receive()`);
+   proto contracts untouched (no franking field, `seq` server-assigned, `epoch` client-declared);
+   join-side INV-4 is genuine; no key material reaches the wire. Non-blocking notes in K3's
+   comment: zeroization, seed/pubkey consistency, an `.expect()` in library code.
+3. Narrow re-review of each fix delta by the **other** agent (Sol re-reviews #39's fix, K3
+   re-reviews #38's fix). Scope to the delta only.
+4. charge merges #39 and #38.
 5. **M2 EXIT AC** (what actually closes M2): F2 + F4 encrypted DMs end-to-end across 3 clients
    on the live stack, no-plaintext scan on delivery tables, device-compromise forward secrecy
    + PCS, `adversarial_ds_swapped_keypackage_rejected`. Owned by Sol (citadel-core e2e) + K3
