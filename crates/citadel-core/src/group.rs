@@ -22,14 +22,23 @@ pub enum GroupError {
     MemberRejected(#[from] CredentialError),
     #[error("mls error: {0}")]
     Mls(String),
-    #[error("message was not an application message")]
-    NotApplication,
+    #[error("message type is not supported")]
+    UnsupportedMessage,
+    #[error("proposal-bearing commits are not supported")]
+    ProposalBearingCommitDeferred,
+    #[error("there is no pending local commit")]
+    NoPendingCommit,
+    #[error("the prepared commit does not match this group's pending commit")]
+    PreparedCommitMismatch,
+    #[error("incoming commit conflicts with a pending self-update")]
+    PendingCommitConflictDeferred,
 }
 
 /// A joined DM group. Wraps the OpenMLS group; all mutation goes through here so
 /// padding and member verification cannot be bypassed.
 pub struct DmGroup {
     mls: MlsGroup,
+    pending_self_update: Option<Vec<u8>>,
 }
 
 impl DmGroup {
@@ -50,7 +59,10 @@ impl DmGroup {
             identity.credential_with_key.clone(),
         )
         .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
-        Ok(Self { mls })
+        Ok(Self {
+            mls,
+            pending_self_update: None,
+        })
     }
 
     /// Add members from their fetched KeyPackages in one commit (F2 step 2).
@@ -62,7 +74,18 @@ impl DmGroup {
         provider: &Provider,
         identity: &DeviceIdentity,
         key_packages: &[KeyPackage],
+        verifier: &impl IdentityVerifier,
     ) -> Result<AddMembersOutput, GroupError> {
+        // INV-4: the initiator rejects every fetched KeyPackage before
+        // OpenMLS creates a commit, a Welcome, or any pending group state.
+        for key_package in key_packages {
+            let leaf = key_package.leaf_node();
+            verify_member_credential(
+                leaf.credential().serialized_content(),
+                leaf.signature_key().as_slice(),
+                verifier,
+            )?;
+        }
         let (commit, welcome, _group_info) = self
             .mls
             .add_members(provider, &identity.signer, key_packages)
@@ -105,13 +128,20 @@ impl DmGroup {
         // INV-4: verify EVERY member's credential against the KT log before we
         // accept the group. A single rejection aborts without joining.
         for member in staged.members() {
-            verify_member_credential(member.credential.serialized_content(), verifier)?;
+            verify_member_credential(
+                member.credential.serialized_content(),
+                &member.signature_key,
+                verifier,
+            )?;
         }
 
         let mls = staged
             .into_group(provider)
             .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
-        Ok(Self { mls })
+        Ok(Self {
+            mls,
+            pending_self_update: None,
+        })
     }
 
     /// Encrypt an application message (F4 send). The plaintext is padded to a
@@ -132,27 +162,112 @@ impl DmGroup {
             .map_err(|e| GroupError::Mls(format!("{e:?}")))
     }
 
-    /// Decrypt an incoming application message (F4 receive), returning the
-    /// unpadded plaintext. `message_bytes` is a serialized `MlsMessageIn`.
-    /// Non-application messages (proposals/commits) return
-    /// [`GroupError::NotApplication`] — handling those is M3.
+    /// Prepare a self-update commit for transport without advancing the local
+    /// epoch. The caller confirms it only after transport acceptance, or aborts
+    /// it after rejection. Delivery ordering and rebase remain M3.
+    pub fn prepare_self_update(
+        &mut self,
+        provider: &Provider,
+        identity: &DeviceIdentity,
+    ) -> Result<PreparedCommit, GroupError> {
+        let bundle = self
+            .mls
+            .self_update(provider, &identity.signer, LeafNodeParameters::default())
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        let proposed_epoch = self
+            .mls
+            .pending_commit()
+            .ok_or_else(|| GroupError::Mls("OpenMLS created no pending self-update".into()))?
+            .epoch()
+            .as_u64();
+        let commit_bytes = match bundle.into_commit().to_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.mls
+                    .clear_pending_commit(provider.storage())
+                    .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+                return Err(GroupError::Mls(format!("{error:?}")));
+            }
+        };
+        self.pending_self_update = Some(commit_bytes.clone());
+        Ok(PreparedCommit {
+            commit_bytes,
+            proposed_epoch,
+        })
+    }
+
+    /// Merge the pending local commit after transport accepts it.
+    pub fn confirm_self_update(
+        &mut self,
+        provider: &Provider,
+        prepared: &PreparedCommit,
+    ) -> Result<(), GroupError> {
+        self.validate_prepared_commit(prepared)?;
+        self.mls
+            .merge_pending_commit(provider)
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        self.pending_self_update = None;
+        Ok(())
+    }
+
+    /// Discard the pending local commit after transport rejects it.
+    pub fn abort_self_update(
+        &mut self,
+        provider: &Provider,
+        prepared: &PreparedCommit,
+    ) -> Result<(), GroupError> {
+        self.validate_prepared_commit(prepared)?;
+        self.mls
+            .clear_pending_commit(provider.storage())
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        self.pending_self_update = None;
+        Ok(())
+    }
+
+    /// Process incoming M2 traffic. Application messages return unpadded
+    /// plaintext. Proposal-free staged commits are KT-verified and merged so
+    /// peer self-updates advance the epoch. Commit ordering, conflict handling,
+    /// and proposal-bearing commits remain M3.
     pub fn receive(
         &mut self,
         provider: &Provider,
         message_bytes: &[u8],
-    ) -> Result<Vec<u8>, GroupError> {
+        verifier: &impl IdentityVerifier,
+    ) -> Result<ReceiveOutcome, GroupError> {
         let msg = MlsMessageIn::tls_deserialize_exact_bytes(message_bytes)
             .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
         let protocol = msg
             .try_into_protocol_message()
-            .map_err(|_| GroupError::NotApplication)?;
+            .map_err(|_| GroupError::UnsupportedMessage)?;
+        if protocol.content_type() == ContentType::Commit && self.pending_self_update.is_some() {
+            return Err(GroupError::PendingCommitConflictDeferred);
+        }
         let processed = self
             .mls
             .process_message(provider, protocol)
             .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
         match processed.into_content() {
-            ProcessedMessageContent::ApplicationMessage(app) => Ok(unpad(&app.into_bytes())?),
-            _ => Err(GroupError::NotApplication),
+            ProcessedMessageContent::ApplicationMessage(app) => {
+                Ok(ReceiveOutcome::Application(unpad(&app.into_bytes())?))
+            }
+            ProcessedMessageContent::StagedCommitMessage(staged) => {
+                if staged.queued_proposals().next().is_some() {
+                    return Err(GroupError::ProposalBearingCommitDeferred);
+                }
+                if let Some(leaf) = staged.update_path_leaf_node() {
+                    verify_member_credential(
+                        leaf.credential().serialized_content(),
+                        leaf.signature_key().as_slice(),
+                        verifier,
+                    )?;
+                }
+                let epoch = staged.epoch().as_u64();
+                self.mls
+                    .merge_staged_commit(provider, *staged)
+                    .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+                Ok(ReceiveOutcome::CommitMerged { epoch })
+            }
+            _ => Err(GroupError::UnsupportedMessage),
         }
     }
 
@@ -166,13 +281,52 @@ impl DmGroup {
     pub fn member_count(&self) -> usize {
         self.mls.members().count()
     }
+
+    fn validate_prepared_commit(&self, prepared: &PreparedCommit) -> Result<(), GroupError> {
+        if self.mls.pending_commit().is_none() {
+            return Err(GroupError::NoPendingCommit);
+        }
+        match &self.pending_self_update {
+            Some(expected) if expected == &prepared.commit_bytes => Ok(()),
+            Some(_) => Err(GroupError::PreparedCommitMismatch),
+            None => Err(GroupError::NoPendingCommit),
+        }
+    }
 }
 
 /// Serialized outputs of an add-members commit, ready for delivery submission.
+#[derive(Debug)]
 pub struct AddMembersOutput {
     /// The commit `MlsMessageOut`, submitted as an `EnvelopeKind::Commit`.
     pub commit_bytes: Vec<u8>,
     /// The Welcome `MlsMessageOut`, submitted as an `EnvelopeKind::Welcome`
     /// addressed to the joiners' devices (ADR-0005 §1).
     pub welcome_bytes: Vec<u8>,
+}
+
+/// A locally prepared commit awaiting transport acceptance.
+pub struct PreparedCommit {
+    commit_bytes: Vec<u8>,
+    proposed_epoch: u64,
+}
+
+impl PreparedCommit {
+    /// Serialized commit for delivery as an `EnvelopeKind::Commit`.
+    pub fn commit_bytes(&self) -> &[u8] {
+        &self.commit_bytes
+    }
+
+    /// Epoch reached only after [`DmGroup::confirm_self_update`].
+    pub fn proposed_epoch(&self) -> u64 {
+        self.proposed_epoch
+    }
+}
+
+/// Result of processing one incoming MLS message.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReceiveOutcome {
+    /// Decrypted and unpadded application plaintext.
+    Application(Vec<u8>),
+    /// A verified staged commit was merged into this epoch.
+    CommitMerged { epoch: u64 },
 }

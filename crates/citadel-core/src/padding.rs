@@ -45,7 +45,9 @@ fn bucket_for(framed_len: usize) -> Option<usize> {
 /// Frame and pad `content` to the next bucket. The result length is always one
 /// of [`BUCKETS`]. Call this on plaintext *before* MLS encrypt.
 pub fn pad(content: &[u8]) -> Result<Vec<u8>, PadError> {
-    let framed_len = LEN_PREFIX + content.len();
+    let framed_len = LEN_PREFIX
+        .checked_add(content.len())
+        .ok_or(PadError::TooLarge(content.len()))?;
     let bucket = bucket_for(framed_len).ok_or(PadError::TooLarge(content.len()))?;
     let mut out = Vec::with_capacity(bucket);
     out.extend_from_slice(&(content.len() as u32).to_be_bytes());
@@ -61,7 +63,10 @@ pub fn unpad(frame: &[u8]) -> Result<Vec<u8>, PadError> {
     if !BUCKETS.contains(&frame.len()) {
         return Err(PadError::Malformed);
     }
-    let len = u32::from_be_bytes(frame[..LEN_PREFIX].try_into().unwrap()) as usize;
+    let length_bytes: [u8; LEN_PREFIX] = frame[..LEN_PREFIX]
+        .try_into()
+        .map_err(|_| PadError::Malformed)?;
+    let len = u32::from_be_bytes(length_bytes) as usize;
     let end = LEN_PREFIX.checked_add(len).ok_or(PadError::Malformed)?;
     if end > frame.len() {
         return Err(PadError::Malformed);

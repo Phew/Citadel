@@ -31,6 +31,8 @@ pub enum CredentialError {
     Malformed,
     #[error("identity signature does not verify under the credential's identity key")]
     BadIdentitySignature,
+    #[error("MLS leaf signature key does not match the credential's device key")]
+    DeviceKeyMismatch,
     #[error("identity key is not attested by the KT log for this account")]
     NotKtAttested,
 }
@@ -40,23 +42,34 @@ pub enum CredentialError {
 /// well-formed, self-consistent (identity signature valid), and KT-attested.
 pub fn verify_member_credential(
     credential_bytes: &[u8],
+    leaf_signature_key: &[u8],
     verifier: &impl IdentityVerifier,
 ) -> Result<DeviceCredential, CredentialError> {
     let cred: DeviceCredential =
         serde_json::from_slice(credential_bytes).map_err(|_| CredentialError::Malformed)?;
+    verify_device_credential_signature(&cred)?;
 
-    // (1) The account identity key signed this device binding.
-    let vk = VerifyingKey::from_bytes(&cred.tbs.identity_pubkey.0)
-        .map_err(|_| CredentialError::BadIdentitySignature)?;
-    let sig = Signature::from_bytes(&cred.signature.0);
-    vk.verify_strict(&cred.tbs.signing_input(), &sig)
-        .map_err(|_| CredentialError::BadIdentitySignature)?;
+    // (1) The identity-signed device key is the leaf key OpenMLS authenticates.
+    if leaf_signature_key != cred.tbs.device_pubkey.0 {
+        return Err(CredentialError::DeviceKeyMismatch);
+    }
 
     // (2) That identity key is the one the KT log attests for the account.
     if !verifier.is_kt_attested(cred.tbs.account_id, &cred.tbs.identity_pubkey) {
         return Err(CredentialError::NotKtAttested);
     }
     Ok(cred)
+}
+
+pub(crate) fn verify_device_credential_signature(
+    credential: &DeviceCredential,
+) -> Result<(), CredentialError> {
+    let verifying_key = VerifyingKey::from_bytes(&credential.tbs.identity_pubkey.0)
+        .map_err(|_| CredentialError::BadIdentitySignature)?;
+    let signature = Signature::from_bytes(&credential.signature.0);
+    verifying_key
+        .verify_strict(&credential.tbs.signing_input(), &signature)
+        .map_err(|_| CredentialError::BadIdentitySignature)
 }
 
 #[cfg(test)]
@@ -99,7 +112,8 @@ mod tests {
         let id = SigningKey::from_bytes(&[3u8; 32]);
         let (cred, acct, idpub) = signed_credential(&id);
         let bytes = serde_json::to_vec(&cred).unwrap();
-        let ok = verify_member_credential(&bytes, &TrustOne(acct, idpub));
+        let ok =
+            verify_member_credential(&bytes, &cred.tbs.device_pubkey.0, &TrustOne(acct, idpub));
         assert_eq!(ok.unwrap().tbs.account_id, acct);
     }
 
@@ -110,7 +124,11 @@ mod tests {
         let (cred, _acct, _idpub) = signed_credential(&id);
         let bytes = serde_json::to_vec(&cred).unwrap();
         let other = AccountId::new();
-        let err = verify_member_credential(&bytes, &TrustOne(other, IdentityPublicKey([0u8; 32])));
+        let err = verify_member_credential(
+            &bytes,
+            &cred.tbs.device_pubkey.0,
+            &TrustOne(other, IdentityPublicKey([0u8; 32])),
+        );
         assert_eq!(err, Err(CredentialError::NotKtAttested));
     }
 
@@ -120,7 +138,17 @@ mod tests {
         let (mut cred, acct, idpub) = signed_credential(&id);
         cred.signature = ProtoSig([0u8; 64]); // not a valid signature
         let bytes = serde_json::to_vec(&cred).unwrap();
-        let err = verify_member_credential(&bytes, &TrustOne(acct, idpub));
+        let err =
+            verify_member_credential(&bytes, &cred.tbs.device_pubkey.0, &TrustOne(acct, idpub));
         assert_eq!(err, Err(CredentialError::BadIdentitySignature));
+    }
+
+    #[test]
+    fn rejects_leaf_key_not_bound_by_device_credential() {
+        let id = SigningKey::from_bytes(&[6u8; 32]);
+        let (cred, acct, idpub) = signed_credential(&id);
+        let bytes = serde_json::to_vec(&cred).unwrap();
+        let err = verify_member_credential(&bytes, &[0xA5; 32], &TrustOne(acct, idpub));
+        assert_eq!(err, Err(CredentialError::DeviceKeyMismatch));
     }
 }

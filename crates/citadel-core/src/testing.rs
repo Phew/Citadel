@@ -1,12 +1,10 @@
 //! Test helpers for fabricating self-consistent device identities.
 //!
-//! Behind the `testing` feature so the harness (K3) and the adversarial suite
-//! (Opus, `test-harness/adversarial`) can build valid — and deliberately
-//! invalid — identities against the same code the client uses. Not compiled
-//! into release clients.
+//! Behind the `testing` feature so the harness and adversarial suite can build
+//! valid and deliberately invalid identities against the same code the client
+//! uses. Excluded unless tests or the `testing` feature are enabled.
 
 use crate::credential::IdentityVerifier;
-use crate::crypto::Provider;
 use crate::identity::DeviceIdentity;
 use citadel_proto::credential::{
     DeviceCredential, DeviceCredentialTbs, DevicePublicKey, Signature as ProtoSig,
@@ -15,6 +13,7 @@ use citadel_proto::ids::{AccountId, DeviceId};
 use citadel_proto::IdentityPublicKey;
 use ed25519_dalek::{Signer, SigningKey};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 /// A fabricated identity plus the material a test verifier needs.
 pub struct TestIdentity {
@@ -24,7 +23,7 @@ pub struct TestIdentity {
 }
 
 fn random_seed() -> [u8; 32] {
-    // Two v4 UUIDs (OS CSPRNG) give 32 random bytes — test-only key material.
+    // Two v4 UUIDs from the OS CSPRNG give 32 bytes of test-only key material.
     let mut seed = [0u8; 32];
     seed[..16].copy_from_slice(Uuid::new_v4().as_bytes());
     seed[16..].copy_from_slice(Uuid::new_v4().as_bytes());
@@ -33,7 +32,7 @@ fn random_seed() -> [u8; 32] {
 
 /// Build a valid, KT-consistent device identity: a fresh account identity key
 /// signs a fresh device credential, exactly as M1 registration/enrollment would.
-pub fn make_identity(provider: &Provider) -> TestIdentity {
+pub fn make_identity() -> TestIdentity {
     let identity_key = SigningKey::from_bytes(&random_seed());
     let device_key = SigningKey::from_bytes(&random_seed());
 
@@ -55,9 +54,8 @@ pub fn make_identity(provider: &Provider) -> TestIdentity {
     };
 
     let identity = DeviceIdentity::from_parts(
-        provider,
         device_credential,
-        device_key.to_bytes(),
+        Zeroizing::new(device_key.to_bytes()),
         device_key.verifying_key().to_bytes(),
     )
     .expect("valid identity");

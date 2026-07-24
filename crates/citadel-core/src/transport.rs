@@ -1,10 +1,9 @@
-//! The boundary between citadel-core and the delivery service (K3).
+//! The boundary between citadel-core and the delivery service.
 //!
 //! citadel-core produces and consumes `citadel-proto` wire types (ADR-0005,
 //! frozen) and never talks to a live server directly: a host wires a concrete
 //! [`DeliveryTransport`] (HTTP submit/sync + WS gateway) behind this trait, so
-//! the core is unit-testable with an in-memory fake and K3's delivery-service
-//! is swapped in for integration and adversarial tests.
+//! the group state machine remains independent of a transport implementation.
 
 use citadel_proto::delivery::{MessagesPage, SubmitMessageRequest, SubmitMessageResponse};
 use citadel_proto::ids::{DeviceId, GroupId};
@@ -45,12 +44,12 @@ pub fn welcome_envelope(group_id: GroupId, epoch: u64, welcome_bytes: &[u8]) -> 
 pub trait DeliveryTransport {
     type Error;
 
-    /// `POST /v1/groups/{gid}/messages` — submit one MLS message, get its
+    /// `POST /v1/groups/{gid}/messages`: submit one MLS message and get its
     /// server-assigned `(seq, epoch echoed)` back.
     async fn submit(&self, req: SubmitMessageRequest)
         -> Result<SubmitMessageResponse, Self::Error>;
 
-    /// `GET /v1/groups/{gid}/messages?after=` — one ciphertext page.
+    /// `GET /v1/groups/{gid}/messages?after=`: one ciphertext page.
     async fn fetch(&self, group_id: GroupId, after: u64) -> Result<MessagesPage, Self::Error>;
 
     /// Pending Welcomes addressed to this device, delivered on gateway connect

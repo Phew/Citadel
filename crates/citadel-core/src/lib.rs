@@ -3,10 +3,9 @@
 //! **This is the only place plaintext message content may exist (INV-1, INV-2).**
 //! citadel-core owns the OpenMLS group state machine (create/join/send/receive),
 //! member-credential verification against the KT log (INV-4), length-hiding
-//! padding, and the local encrypted store. It speaks the frozen
-//! `citadel-proto` wire contracts (ADR-0005) and reaches the delivery service
-//! only through the injected [`transport::DeliveryTransport`] trait, so the core
-//! is testable without a live server.
+//! padding, and delivery envelope construction. It speaks the frozen
+//! `citadel-proto` wire contracts (ADR-0005) and exposes the
+//! [`transport::DeliveryTransport`] integration seam.
 
 pub mod credential;
 pub mod crypto;

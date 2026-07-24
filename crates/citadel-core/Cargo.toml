@@ -1,6 +1,6 @@
 [package]
 name = "citadel-core"
-description = "Client core: MLS state machine, sync, local encrypted store. The only place plaintext exists (INV-1)."
+description = "Client MLS group state, credential verification, and message padding."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,21 +14,15 @@ citadel-proto = { workspace = true }
 openmls = "0.8"
 openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
-openmls_basic_credential = "0.5"
-tls_codec = "0.4"
 # Client-side Ed25519 verification of device credentials against the KT-attested
 # identity key (INV-4). A vetted library, not a hand-rolled primitive (INV-10).
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-serde = { workspace = true }
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-tracing = { workspace = true }
+zeroize = "1"
 
 [features]
 # Exposes `citadel_core::testing` for the harness and adversarial suite to build
 # valid and deliberately-invalid identities against real client code.
 testing = []
-
-[dev-dependencies]
-citadel-service-crypto = { workspace = true }
