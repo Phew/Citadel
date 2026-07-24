@@ -11,7 +11,7 @@
 //! - `ignore_missing` stays at its default **false** and default sqlx
 //!   locking is kept — a partial view of the shared history is exactly the
 //!   failure this ADR removes.
-//! - [`migrate`] pins `search_path` to `pg_catalog, public, pg_temp` and
+//! - [`migrate`] pins `search_path` to `public, pg_catalog, pg_temp` and
 //!   fully qualifies `public._sqlx_migrations`; a migration history table in
 //!   ANY other schema is a fatal configuration error, never an independent
 //!   service history.
@@ -37,8 +37,11 @@ pub const LOCK_TIMEOUT_SECS: u64 = 60;
 /// ADR-0006 §1 bound: per-migration (per-statement) execution.
 pub const MIGRATION_STATEMENT_TIMEOUT_SECS: u64 = 300;
 /// ADR-0006 §1: the canonical history lives in `public`, with the temporary
-/// schema searched last.
-const SEARCH_PATH: &str = "pg_catalog, public, pg_temp";
+/// schema searched last. `public` comes FIRST because PostgreSQL creates
+/// unqualified objects in the first schema of `search_path` — sqlx creates
+/// `_sqlx_migrations` unqualified, and a `pg_catalog`-first path would try to
+/// create it in the system catalog (SQLSTATE 42501).
+const SEARCH_PATH: &str = "public, pg_catalog, pg_temp";
 
 /// The embedded canonical corpus. `sqlx::migrate!` embeds the WORKING-TREE
 /// bytes at compile time, so `.gitattributes` pins these files to LF — a

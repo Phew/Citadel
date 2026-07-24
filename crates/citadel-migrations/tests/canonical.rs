@@ -5,7 +5,7 @@
 //! Isolation: these tests manipulate `_sqlx_migrations` directly, so each
 //! case runs in a THROWAWAY DATABASE created for it and dropped on
 //! teardown — never a shared history, never TRUNCATE of anything. The
-//! preflight under test pins search_path to `pg_catalog, public, pg_temp`
+//! preflight under test pins search_path to `public, pg_catalog, pg_temp`
 //! (ADR-0006 §1), so per-test schemas are not an option; databases are.
 
 use sqlx::postgres::PgPoolOptions;
