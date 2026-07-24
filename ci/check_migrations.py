@@ -8,8 +8,12 @@ Enforces the CORE rules of the canonical-migration decision:
   citadel-migrations, exactly one sqlx::migrate! call (in
   citadel-migrations), and only citadel-migrations declares sqlx's
   `migrate` feature (via `cargo metadata --no-deps`);
-- no production source enables `ignore_missing`, disables sqlx locking, or
-  sets no_tx (crates/*/src scan);
+- no production source enables `ignore_missing`, disables sqlx locking
+  (field assignment or .set_locking(false) builder), or sets no_tx
+  (crates/*/src scan);
+- the canonical runner pins search_path to exactly "public, pg_temp"
+  (ADR-0006 Amendment 1), and no other search_path schema list appears in
+  the migration source;
 - manifest versions are positive, globally unique, and strictly append
   after the base manifest's maximum;
 - every base-manifest entry survives unchanged (same entry, same filename)
@@ -67,14 +71,34 @@ REQUIRED_ENTRY_FIELDS = {
 }
 
 # Production-source bans (ADR-0006 §1): enabling ignore_missing, disabling
-# migrator locking, or non-transactional migrations. Matches assignments/
-# builder calls with the dangerous VALUE only, so doc comments naming the
-# flag do not false-positive.
+# migrator locking (field assignment OR the .set_locking(false) builder
+# form), or non-transactional migrations. Matches assignments/builder calls
+# with the dangerous VALUE only, so doc comments naming the flag do not
+# false-positive.
 BANNED_SOURCE_PATTERNS = [
     (re.compile(r"ignore_missing\s*(?:=|\()\s*true"), "ignore_missing enabled"),
-    (re.compile(r"\blocking\s*=\s*false"), "sqlx migrator locking disabled"),
+    (
+        re.compile(r"\blocking\s*=\s*false|\.set_locking\s*\(\s*false\s*\)"),
+        "sqlx migrator locking disabled",
+    ),
     (re.compile(r"\bno_tx\s*=\s*true"), "non-transactional migration"),
 ]
+
+# ADR-0006 Amendment 1 pins the migration connection's search_path to
+# exactly "public, pg_temp": pg_catalog deliberately UNNAMED (implicit-first
+# lookup; naming it after public would let public shadow built-ins — the
+# rejected ordering), public first explicit (sqlx's unqualified
+# _sqlx_migrations creation target), pg_temp last (temporary-schema
+# hardening). Any other value — including the run-29983887580 original
+# "pg_catalog, public, pg_temp" and the rejected "public, pg_catalog,
+# pg_temp" — is a violation.
+RUNNER_SRC = "crates/citadel-migrations/src/lib.rs"
+CANONICAL_SEARCH_PATH = "public, pg_temp"
+SEARCH_PATH_CONST = re.compile(r'const\s+SEARCH_PATH\s*:\s*&str\s*=\s*"([^"]*)"')
+# An inline schema list after SET search_path TO in a string literal; a
+# {SEARCH_PATH}-style const reference does not match (the const rule above
+# covers the value it names).
+SEARCH_PATH_LITERAL = re.compile(r"search_path\s+TO\s+([A-Za-z0-9_$, ]+?)\s*[\"']")
 
 
 def git(*args: str) -> bytes:
@@ -213,6 +237,31 @@ def violations(ctx: dict) -> list[str]:
         for pattern, label in BANNED_SOURCE_PATTERNS:
             if pattern.search(text):
                 found.append(f"{path}: {label} (ADR-0006 §1)")
+
+    # --- Canonical search_path (ADR-0006 Amendment 1). ---
+    runner = ctx["sources"].get(RUNNER_SRC)
+    if runner is None:
+        found.append(f"{RUNNER_SRC} missing; the canonical runner must pin its search_path")
+    else:
+        const = SEARCH_PATH_CONST.search(runner)
+        if const is None:
+            found.append(
+                f"{RUNNER_SRC}: SEARCH_PATH const missing — ADR-0006 Amendment 1 "
+                f"pins {CANONICAL_SEARCH_PATH!r} exactly"
+            )
+        elif const.group(1) != CANONICAL_SEARCH_PATH:
+            found.append(
+                f"{RUNNER_SRC}: SEARCH_PATH is {const.group(1)!r}; ADR-0006 "
+                f"Amendment 1 pins {CANONICAL_SEARCH_PATH!r} exactly (pg_catalog "
+                "unnamed = implicit-first lookup; public first explicit = "
+                "creation target; pg_temp last)"
+            )
+        for literal in SEARCH_PATH_LITERAL.finditer(runner):
+            if literal.group(1) != CANONICAL_SEARCH_PATH:
+                found.append(
+                    f"{RUNNER_SRC}: inline search_path {literal.group(1)!r} is not "
+                    f"the canonical {CANONICAL_SEARCH_PATH!r} (ADR-0006 Amendment 1)"
+                )
 
     # --- Manifest shape and recognized values. ---
     service_names = {p["name"] for p in ctx["packages"]} | {"shared"}
@@ -362,6 +411,53 @@ def self_test(ctx: dict) -> list[str]:
         )
 
     failures.append(expect_fires("ignore_missing in source", ignore_missing))
+
+    def locking_field(p):
+        p["sources"]["crates/auth-service/src/store.rs"] = (
+            "pub async fn migrate() { let mut m = sqlx::migrate!(\"./migrations\"); "
+            "m.locking = false; }"
+        )
+
+    failures.append(expect_fires("locking = false in source", locking_field))
+
+    def locking_builder(p):
+        p["sources"]["crates/auth-service/src/store.rs"] = (
+            "pub async fn migrate() { "
+            "sqlx::migrate!(\"./migrations\").set_locking(false); }"
+        )
+
+    failures.append(expect_fires("set_locking(false) builder in source", locking_builder))
+
+    def search_path_shadow_ordering(p):
+        # The ordering Amendment 1 REJECTS: public ahead of the system
+        # catalog lets objects in public shadow built-ins.
+        src = p["sources"][RUNNER_SRC]
+        p["sources"][RUNNER_SRC] = src.replace(
+            f'"{CANONICAL_SEARCH_PATH}"', '"public, pg_catalog, pg_temp"'
+        )
+
+    failures.append(expect_fires("rejected search_path ordering", search_path_shadow_ordering))
+
+    def search_path_catalog_first(p):
+        # The run-29983887580 ordering: unqualified creation lands in
+        # pg_catalog (SQLSTATE 42501).
+        src = p["sources"][RUNNER_SRC]
+        p["sources"][RUNNER_SRC] = src.replace(
+            f'"{CANONICAL_SEARCH_PATH}"', '"pg_catalog, public, pg_temp"'
+        )
+
+    failures.append(
+        expect_fires("catalog-first search_path (run 29983887580)", search_path_catalog_first)
+    )
+
+    def inline_search_path(p):
+        # A second, inline search_path string that disagrees with the const.
+        src = p["sources"][RUNNER_SRC]
+        p["sources"][RUNNER_SRC] = src + (
+            '\nconst SNEAK: &str = "SET search_path TO public, pg_catalog, pg_temp";\n'
+        )
+
+    failures.append(expect_fires("inline non-canonical search_path literal", inline_search_path))
 
     return [f for f in failures if f]
 

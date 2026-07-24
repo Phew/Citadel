@@ -632,3 +632,76 @@ async fn canonical_migration_lock_timeout_fails_closed() {
     drop(pool);
     db.teardown().await;
 }
+
+/// ADR-0006 §1 evidence: the exact-prefix preflight runs UNDER the
+/// migration lock. With the lock held and history planted that preflight
+/// MUST reject, a second runner fails on the lock wait — it never reaches
+/// preflight. Only after the lock is released does the same runner reach
+/// preflight and reject the planted history. A preflight that ran outside
+/// the lock would return MigrateError::Preflight in the first phase.
+#[tokio::test]
+#[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
+async fn canonical_migration_preflight_runs_under_migration_lock() {
+    let db = TestDb::create().await;
+    let pool = db.pool(2).await;
+    citadel_migrations::migrate(&pool).await.expect("apply");
+
+    // Plant history the preflight must reject (unknown version 999 — an
+    // applied row beyond the corpus head).
+    sqlx::query(
+        "INSERT INTO public._sqlx_migrations \
+         (version, description, success, checksum, execution_time) \
+         VALUES (999, 'bogus', true, decode($1, 'hex'), 0)",
+    )
+    .bind("00".repeat(48))
+    .execute(&pool)
+    .await
+    .expect("plant unknown version");
+
+    // Hold the migrator's advisory lock on a dedicated connection (the
+    // test-side CRC reimplementation is the independent oracle for the id
+    // the library now derives for itself).
+    let lock_id = sqlx_migration_lock_id(&db.name);
+    let holder = db.pool(1).await;
+    let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(lock_id)
+        .fetch_one(&holder)
+        .await
+        .expect("take advisory lock");
+    assert!(got, "test must hold the migrator lock");
+
+    // Phase 1: the second runner must die on the LOCK, not on preflight.
+    let err = citadel_migrations::migrate_with_bounds(&pool, 2, 300)
+        .await
+        .expect_err("a held lock must stop the runner before preflight");
+    assert!(
+        !matches!(err, citadel_migrations::MigrateError::Preflight(_)),
+        "preflight ran WITHOUT the lock (TOCTOU): {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("lock") || msg.contains("timeout") || msg.contains("canceling"),
+        "phase 1 error should name the lock wait: {msg}"
+    );
+
+    // Phase 2: release the lock; the same runner must now reach preflight
+    // and reject the planted history — the check still happens, under the
+    // lock.
+    let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+        .bind(lock_id)
+        .fetch_one(&holder)
+        .await
+        .expect("release advisory lock");
+    assert!(released);
+    let err = citadel_migrations::migrate_with_bounds(&pool, 2, 300)
+        .await
+        .expect_err("planted history must be fatal once the lock is held");
+    assert!(
+        matches!(err, citadel_migrations::MigrateError::Preflight(_)),
+        "expected preflight failure after lock release, got {err:?}"
+    );
+
+    drop(holder);
+    drop(pool);
+    db.teardown().await;
+}

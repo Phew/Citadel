@@ -15,11 +15,11 @@
 //!   Amendment 1) and fully qualifies `public._sqlx_migrations`; a migration
 //!   history table in ANY other schema is a fatal configuration error, never
 //!   an independent service history.
-//! - Before any new SQL, the exact-prefix preflight compares successful
-//!   applied rows against the embedded corpus by version AND SHA-384
-//!   checksum. This is ADDITIONAL to sqlx's own VersionMissing /
-//!   VersionMismatch / dirty-state / locking behavior — sqlx's checks are
-//!   not bypassed, they are preceded.
+//! - Before any new SQL — and UNDER the migration advisory lock — the
+//!   exact-prefix preflight compares successful applied rows against the
+//!   embedded corpus by version AND SHA-384 checksum. This is ADDITIONAL to
+//!   sqlx's own VersionMissing / VersionMismatch / dirty-state / locking
+//!   behavior — sqlx's checks are not bypassed, they are preceded.
 //! - Bounds: 60s lock acquisition (`lock_timeout`), 300s per statement
 //!   (`statement_timeout`), plus a tokio backstop over the whole run. A
 //!   timeout is fatal; a second runner behind a held lock fails closed
@@ -86,7 +86,7 @@ pub async fn migrate_with_bounds(
     statement_timeout_secs: u64,
 ) -> Result<(), MigrateError> {
     // One connection for everything: the session settings below must cover
-    // the preflight AND the migrator's own lock/statements.
+    // the lock, the preflight, AND the migrator's own statements.
     let mut conn = pool.acquire().await?;
     sqlx::query(&format!("SET search_path TO {SEARCH_PATH}"))
         .execute(&mut *conn)
@@ -101,21 +101,75 @@ pub async fn migrate_with_bounds(
     .execute(&mut *conn)
     .await?;
 
-    preflight(&mut conn).await?;
+    // ADR-0006 §1: the exact-prefix preflight runs UNDER the migration
+    // lock. Without this, a concurrent runner can change history between
+    // the preflight read and the migrator's own lock acquisition (TOCTOU).
+    // We take sqlx's OWN advisory lock id: session-level advisory locks are
+    // re-entrant on one connection, so run_direct's acquire/release nests
+    // inside this hold, and every canonical runner — ours or a bare
+    // citadel-migrate — serializes on the same lock. The lock_timeout set
+    // above bounds this wait: a held lock fails closed, never hangs.
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&mut *conn)
+        .await?;
+    let lock_id = sqlx_migration_lock_id(&database);
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_id)
+        .execute(&mut *conn)
+        .await?;
 
-    // Backstop over the whole run: lock bound + per-migration bounds +
-    // margin. The statement-level settings are the primary mechanism.
-    // `run_direct` is sqlx's sanctioned path for a single already-acquired
-    // connection (`run` hits the Acquire "not general enough" limitation);
-    // it keeps the SAME connection, so the session settings above cover the
-    // migrator's lock and statements.
-    let n_migrations = MIGRATOR.migrations.len() as u64;
-    let overall =
-        Duration::from_secs(lock_timeout_secs + statement_timeout_secs * n_migrations + 60);
-    tokio::time::timeout(overall, MIGRATOR.run_direct(&mut *conn))
-        .await
-        .map_err(|_| MigrateError::Timeout(overall))??;
+    let run = async {
+        preflight(&mut conn).await?;
+
+        // Backstop over the apply: lock bound + per-migration bounds +
+        // margin. The statement-level settings are the primary mechanism.
+        // `run_direct` is sqlx's sanctioned path for a single
+        // already-acquired connection (`run` hits the Acquire "not general
+        // enough" limitation); it keeps the SAME connection, so the session
+        // settings above cover the migrator's lock and statements.
+        let n_migrations = MIGRATOR.migrations.len() as u64;
+        let overall =
+            Duration::from_secs(lock_timeout_secs + statement_timeout_secs * n_migrations + 60);
+        tokio::time::timeout(overall, MIGRATOR.run_direct(&mut *conn))
+            .await
+            .map_err(|_| MigrateError::Timeout(overall))??;
+        Ok::<(), MigrateError>(())
+    }
+    .await;
+
+    // Release our hold of the (re-entrant) lock on the live-connection
+    // path; a dead connection releases session locks on close. The run's
+    // own result takes precedence over an unlock error.
+    let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock_id)
+        .execute(&mut *conn)
+        .await;
+    run?;
+    unlock?;
     Ok(())
+}
+
+/// CRC-32 (ISO-HDLC), used to derive the SAME advisory lock id sqlx's
+/// PostgreSQL migrator uses (`0x3d32ad9e * CRC32(database name)`,
+/// sqlx-postgres 0.8.6 src/migrate.rs). The canonical evidence suite
+/// reimplements this independently as the oracle that pins the id.
+fn crc32_iso_hdlc(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn sqlx_migration_lock_id(database_name: &str) -> i64 {
+    0x3d32_ad9e_i64.wrapping_mul(crc32_iso_hdlc(database_name.as_bytes()) as i64)
 }
 
 /// One applied row of `public._sqlx_migrations`, as the preflight reads it.
