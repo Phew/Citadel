@@ -1,12 +1,20 @@
 # ADR-0006: Canonical migrations for the shared database
 
 - **Status:** ACCEPTED
+- **Amendment 1:** PROPOSED (2026-07-23)
 - **Date:** 2026-07-21
 - **Accepted:** charge, 2026-07-21
 - **Implementation scope:** phased
 - **Invariants touched:** INV-1, INV-4, INV-6, INV-7
 - **Related:** plans/PLAN.md §§2, 3, 6, 9, 13; plans/AGENTS.md rules 3, 4, 8;
-  docs/decisions/0001 §4, 0005 §2 and Amendment 1; PR #39
+  docs/decisions/0001 §4, 0005 §2 and Amendment 1; PR #39 and
+  [run 29983887580][failed-run]; [PostgreSQL 16 §§5.9.3 and 5.9.5][pg-schemas];
+  [PostgreSQL 16 §20.11][pg-search-path]; [SQLx 0.8.6 PostgreSQL migrator][sqlx-migrator]
+
+[failed-run]: https://github.com/Phew/Citadel/actions/runs/29983887580
+[pg-schemas]: https://www.postgresql.org/docs/16/ddl-schemas.html
+[pg-search-path]: https://www.postgresql.org/docs/16/runtime-config-client.html
+[sqlx-migrator]: https://github.com/transact-rs/sqlx/blob/v0.8.6/sqlx-postgres/src/migrate.rs
 
 ## Acceptance note
 
@@ -47,6 +55,52 @@ exact prefix before concurrent runners serialize. Review flag 3 remains in
 CORE because LF checkout and Git-blob-byte hashing protect embedded SQLx
 checksums. Review flag 5 is folded into the CORE development flow through
 `just migrate`. Review flag 1 is addressed by follow-up A.
+
+## Amendment 1 (PROPOSED): safe creation schema
+
+PR #39 [run 29983887580][failed-run] disproved the search-path ordering in §1.
+SQLx 0.8.6 creates `_sqlx_migrations` with an unqualified
+`CREATE TABLE IF NOT EXISTS`. PostgreSQL creates an unqualified object in the
+first valid schema explicitly named in `search_path`, so
+`pg_catalog, public, pg_temp` directs that statement to
+`pg_catalog._sqlx_migrations`. The PostgreSQL 16 database job failed with
+SQLSTATE 42501, `permission denied to create
+"pg_catalog._sqlx_migrations"`, and `System catalog modifications are
+currently disallowed`. The Compose health and no-plaintext canary jobs reached
+the same migration job, which exited 1 and correctly kept the services
+that depend on the database stopped.
+
+If accepted, Amendment 1 replaces only the pinned search path in §1. Migration
+connections will use:
+
+```sql
+SET search_path TO public, pg_temp;
+```
+
+`pg_catalog` is deliberately omitted. PostgreSQL then searches it implicitly
+before the explicitly listed schemas for object lookup, while `public` remains
+the first explicit schema and therefore the target for SQLx's unqualified
+creation. Naming `pg_temp` explicitly last preserves the accepted temporary
+schema hardening. The canonical history remains
+`public._sqlx_migrations`, custom preflight queries remain fully qualified, and
+`CREATE` on `public` remains restricted to the migration role.
+
+`public, pg_catalog, pg_temp` is rejected because it would place `public`
+before the system catalog for lookup and allow objects there to shadow
+built-ins. Precreating `public._sqlx_migrations` while retaining
+`pg_catalog` first is rejected because SQLx still executes its unqualified
+creation statement against the current schema. Patching SQLx to
+qualify its internal statements is rejected as an unnecessary fork and
+upgrade coupling.
+
+Implementation evidence adds
+`canonical_migrations_create_public_history_with_catalog_and_temp_precedence`
+against real PostgreSQL 16. It must start from an empty database, run the
+canonical SQLx migrator, prove the history exists only at
+`public._sqlx_migrations`, initialize the temporary schema, and prove the
+effective relation and type lookup order is `pg_catalog`, `public`, then the
+temporary schema. Existing empty-apply, no-op reapply, upgrade, Compose-gating,
+and checker evidence remain binding.
 
 ## Context
 
@@ -117,7 +171,8 @@ otherwise first-searched temporary schema last, and custom preflight queries
 fully qualify the table. `CREATE` on schema `public` is revoked from `PUBLIC`;
 only the migration role can create schema objects there. A second migration
 history in another schema is a fatal configuration error, not an independent
-service history.
+service history. Amendment 1 proposes replacing this ordering and remains
+non-binding until accepted.
 
 The canonical SQLx `Migrator` keeps its default database locking and
 `ignore_missing = false`. Enabling `ignore_missing` anywhere in production code
@@ -347,3 +402,4 @@ database is required:
 charge accepted the canonical corpus and dedicated `citadel-migrate` job on
 2026-07-21 with the phased scope recorded above. Per-service partial migrators
 remain rejected, and both `ignore_missing` settings are removed from PR #39.
+Amendment 1 remains PROPOSED until charge accepts the corrected schema policy.
