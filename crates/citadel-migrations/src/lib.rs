@@ -11,10 +11,10 @@
 //! - `ignore_missing` stays at its default **false** and default sqlx
 //!   locking is kept — a partial view of the shared history is exactly the
 //!   failure this ADR removes.
-//! - [`migrate`] pins `search_path` to `public, pg_catalog, pg_temp` and
-//!   fully qualifies `public._sqlx_migrations`; a migration history table in
-//!   ANY other schema is a fatal configuration error, never an independent
-//!   service history.
+//! - [`migrate`] pins `search_path` to `public, pg_temp` (ADR-0006
+//!   Amendment 1) and fully qualifies `public._sqlx_migrations`; a migration
+//!   history table in ANY other schema is a fatal configuration error, never
+//!   an independent service history.
 //! - Before any new SQL, the exact-prefix preflight compares successful
 //!   applied rows against the embedded corpus by version AND SHA-384
 //!   checksum. This is ADDITIONAL to sqlx's own VersionMissing /
@@ -36,12 +36,15 @@ use thiserror::Error;
 pub const LOCK_TIMEOUT_SECS: u64 = 60;
 /// ADR-0006 §1 bound: per-migration (per-statement) execution.
 pub const MIGRATION_STATEMENT_TIMEOUT_SECS: u64 = 300;
-/// ADR-0006 §1: the canonical history lives in `public`, with the temporary
-/// schema searched last. `public` comes FIRST because PostgreSQL creates
-/// unqualified objects in the first schema of `search_path` — sqlx creates
-/// `_sqlx_migrations` unqualified, and a `pg_catalog`-first path would try to
-/// create it in the system catalog (SQLSTATE 42501).
-const SEARCH_PATH: &str = "public, pg_catalog, pg_temp";
+/// ADR-0006 §1 as amended (Amendment 1, ACCEPTED): `public, pg_temp`.
+/// `pg_catalog` is deliberately UNNAMED so PostgreSQL searches it implicitly
+/// before the listed schemas for lookup — naming it after `public` would let
+/// objects in `public` shadow built-ins, which is the rejected ordering.
+/// `public` stays the first EXPLICIT schema, so sqlx's unqualified
+/// `CREATE TABLE _sqlx_migrations` lands there (PostgreSQL creates
+/// unqualified objects in the first valid schema of `search_path`), and
+/// `pg_temp` named last keeps the temporary schema from shadowing anything.
+const SEARCH_PATH: &str = "public, pg_temp";
 
 /// The embedded canonical corpus. `sqlx::migrate!` embeds the WORKING-TREE
 /// bytes at compile time, so `.gitattributes` pins these files to LF — a

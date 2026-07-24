@@ -5,8 +5,9 @@
 //! Isolation: these tests manipulate `_sqlx_migrations` directly, so each
 //! case runs in a THROWAWAY DATABASE created for it and dropped on
 //! teardown — never a shared history, never TRUNCATE of anything. The
-//! preflight under test pins search_path to `public, pg_catalog, pg_temp`
-//! (ADR-0006 §1), so per-test schemas are not an option; databases are.
+//! preflight under test pins search_path to `public, pg_temp`
+//! (ADR-0006 §1, Amendment 1), so per-test schemas are not an option;
+//! databases are.
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -175,6 +176,161 @@ async fn canonical_migrations_apply_from_empty_postgres() {
             .await
             .unwrap();
     assert_eq!(dirty, 0);
+
+    drop(pool);
+    db.teardown().await;
+}
+
+/// ADR-0006 Amendment 1 evidence: from an EMPTY database, the canonical
+/// runner's unqualified `_sqlx_migrations` creation lands in `public` (the
+/// first explicitly named schema of `public, pg_temp`), and the effective
+/// RELATION and TYPE lookup order is `pg_catalog` (implicit, unnamed),
+/// then `public`, then the temporary schema (named last).
+#[tokio::test]
+#[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
+async fn canonical_migrations_create_public_history_with_catalog_and_temp_precedence() {
+    let db = TestDb::create().await;
+    // One dedicated connection: search_path is session state, so the
+    // lookup probes pin the amendment's path on the connection they run on.
+    let pool = db.pool(1).await;
+
+    citadel_migrations::migrate(&pool)
+        .await
+        .expect("apply from empty");
+
+    // The history exists ONLY at public._sqlx_migrations: sqlx created it
+    // unqualified, so its home proves the creation target. Any other schema
+    // here is the run-29983887580 failure mode (pg_catalog) or a second
+    // history (fatal per ADR-0006 §1).
+    let homes: Vec<String> = sqlx::query(
+        "SELECT n.nspname AS s \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = '_sqlx_migrations' AND c.relkind IN ('r', 'p') \
+         ORDER BY n.nspname",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("locate history table")
+    .iter()
+    .map(|r| r.get("s"))
+    .collect();
+    assert_eq!(homes, ["public"], "history must live only in public");
+
+    // Pin the Amendment-1 path explicitly: the probes must not depend on
+    // pool reuse of the migrator's session state.
+    sqlx::query("SET search_path TO public, pg_temp")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Unqualified lookup of the history resolves to the public table.
+    let history: bool = sqlx::query_scalar(
+        "SELECT to_regclass('_sqlx_migrations') = 'public._sqlx_migrations'::regclass",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(history, "unqualified history must resolve in public");
+
+    // Initialize the temporary schema and prove it is live.
+    sqlx::query("CREATE TEMP TABLE precedence_rel (x int)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let temp_live: bool = sqlx::query_scalar("SELECT pg_my_temp_schema() <> 0")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(temp_live, "temporary schema must be initialized");
+
+    let resolves_to = |name: &str, qualified: &str| {
+        let pool = pool.clone();
+        let name = name.to_string();
+        let qualified = qualified.to_string();
+        async move {
+            sqlx::query_scalar::<_, bool>(&format!(
+                "SELECT to_regclass('{name}') = '{qualified}'::regclass"
+            ))
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let type_resolves_to = |name: &str, qualified: &str| {
+        let pool = pool.clone();
+        let name = name.to_string();
+        let qualified = qualified.to_string();
+        async move {
+            sqlx::query_scalar::<_, bool>(&format!(
+                "SELECT '{name}'::regtype = '{qualified}'::regtype"
+            ))
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // RELATION order, all three pairwise edges of
+    // pg_catalog -> public -> pg_temp:
+    // public beats pg_temp: same table in both, public wins.
+    sqlx::query("CREATE TABLE public.precedence_rel (x int)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        resolves_to("precedence_rel", "public.precedence_rel").await,
+        "public must precede the temporary schema for relations"
+    );
+    // pg_catalog beats public: a public table named like a catalog relation
+    // must NOT shadow the built-in (the rejected `public, pg_catalog, ...`
+    // ordering would allow exactly this).
+    sqlx::query("CREATE TABLE public.pg_am (x int)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        resolves_to("pg_am", "pg_catalog.pg_am").await,
+        "pg_catalog must precede public for relations"
+    );
+    // pg_catalog beats pg_temp: temp named LAST means a temp table named
+    // like a catalog relation must not shadow it either.
+    sqlx::query("CREATE TEMP TABLE pg_proc (x int)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        resolves_to("pg_proc", "pg_catalog.pg_proc").await,
+        "pg_catalog must precede the temporary schema for relations"
+    );
+
+    // TYPE order, same three edges:
+    sqlx::query("CREATE TYPE public.precedence_ty AS ENUM ('a')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TYPE pg_temp.precedence_ty AS ENUM ('a')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        type_resolves_to("precedence_ty", "public.precedence_ty").await,
+        "public must precede the temporary schema for types"
+    );
+    sqlx::query("CREATE TYPE public.int4 AS ENUM ('a')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        type_resolves_to("int4", "pg_catalog.int4").await,
+        "pg_catalog must precede public for types"
+    );
+    sqlx::query("CREATE TYPE pg_temp.text AS ENUM ('a')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        type_resolves_to("text", "pg_catalog.text").await,
+        "pg_catalog must precede the temporary schema for types"
+    );
 
     drop(pool);
     db.teardown().await;
