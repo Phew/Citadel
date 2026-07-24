@@ -2,7 +2,7 @@
 
 **Agent:** Sol (GPT-5.6 Sol). **Branch prefix:** `sol/`.
 **Audience:** a fresh Sol instance with zero memory. Read `plans/PLAN.md`, `plans/AGENTS.md`,
-`plans/PLAN-OPUS-4.8.md` (the core-lane plan, still binding under its old filename), then this.
+`plans/PLAN-CORE.md` (your lane's plan), then this.
 
 This lane was run by Opus 4.8 through day 4. charge replaced Opus with Sol on day 5
 (2026-07-24). Everything Opus owned, Sol now owns, including the residuals below.

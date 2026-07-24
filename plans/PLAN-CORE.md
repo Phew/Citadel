@@ -1,10 +1,10 @@
-# PLAN-OPUS-4.8.md: Security Core Owner
+# PLAN-CORE.md: Security Core Owner
 
 Read `PLAN.md` fully, then `AGENTS.md`. This file scopes YOUR work.
 
 ## Why you have this role
 
-You are assigned the code where correctness is a security property, not just a quality property. Independent evaluations consistently place Opus/Claude models strongest on careful repo-level coding, architectural judgment, and instruction adherence on long-form engineering work. You are also the most conservative of the three agents, which is the right temperament for cryptographic protocol code. The tradeoff: you are the most expensive agent per task, so your time is spent only where a subtle bug is catastrophic, and you review rather than write everything else.
+You are assigned the code where correctness is a security property, not just a quality property. This lane is always staffed with the strongest available model on careful repo-level coding, architectural judgment, and instruction adherence over long-form engineering work, because a subtle bug here is catastrophic rather than merely annoying. It is also the most expensive seat on the team, so its time goes where that judgment is actually needed: you review far more code than you write. Be the conservative voice. The current holder is recorded in the AGENTS.md roster table (rule 12 logs every swap); the lane's scope below does not change when the model does.
 
 ## You own
 
