@@ -1,4 +1,4 @@
-# Advisor status — shutdown 2026-07-25 (M2: one component left)
+# Advisor status - day close 2026-07-25 (M2: one component left)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
@@ -7,78 +7,116 @@ cross-review surfaced something green CI missed.
 
 ## FIRST ACTION next session
 
-**Check whether Sol committed and pushed ADR-0007.** At shutdown it was NOT committed: the
-~48KB document existed only as an untracked file in Sol's worktree at
-`C:/tmp/Citadel-sol-m2-local-store-adr`, with branch `sol/m2-local-store-adr` still sitting at
-`1f4e533` and nothing staged. Sol's sandbox account was blocked from writing the shared Git
-index and asked charge to approve staging, committing, and rebasing; charge approved and the
-relay went out, but the result was never confirmed in the repo. This is the single fragile
-thing in the project right now and it is a straight rule-2 violation ("no work exists only in a
-working tree between sessions"). If it is gone, it is a day of Sol's work, and the design
-reasoning was good enough to be worth reconstructing rather than redoing from scratch.
+**K3's independent design review of ADR-0007.** It is on main and PROPOSED (`7592a26`). Nothing
+else in M2 can move until it is reviewed and charge accepts, because the store is blocked on the
+ADR and the last exit criterion is blocked on the store. Sol authored it and is out of usage
+quota for the week, so it cannot defend it in review; review it on its merits regardless, which
+is what an independent design review is for.
 
-If it landed: K3 design-reviews ADR-0007, pressing on Alternative 2 (below), then charge makes
-the two decisions in items 1 and 2 of the queue. If it did not land: get Sol to recommit before
-anything else.
+The prior FIRST ACTION is RESOLVED: ADR-0007 was uncommitted and is now rescued onto main.
 
 ## Resume queue, in order
 
-M2's build PRs and the exit-AC harness are merged and green on main. Four of M2's five exit
-criteria are now standing CI gates. One component and one test remain.
-
-1. **ADR-0007 (local encrypted client store): K3 design-reviews, then charge accepts.** Sol
-   authored it 2026-07-24, PROPOSED, ~48KB. The security reasoning is strong and its evidence
-   design is deliberately harder than what was asked for: the forward-secrecy test hands the
-   attacker the database, every SQLite sidecar file, AND the correct database encryption key,
-   then demands the exact `SecretTreeError::TooDistantInThePast` chain, explicitly refusing
-   parser errors, application-level epoch comparison, or replay rejection as evidence. It pins
-   `max_past_epochs` to zero rather than inheriting the OpenMLS default and fails closed on
-   drift. The PCS evidence uses a test-only secret extractor plus two independent third-party
-   MLS oracles, states that an epoch-number mismatch alone is insufficient, and blocks M2 close
-   rather than substituting a self-referential test. Version pins were advisor-spot-checked
-   against primary sources and are real, not fabricated.
-
-   **The contested part, and where K3's review should press: Alternative 2.** The ADR rejects
-   the stock bundled SQLCipher 4.5.7 because it "is not 4.17.0, which incorporates current
-   upstream SQLite fixes." That is a preference for newer, not a threat statement. No advisory
-   is named, and §1 itself says "a relevant advisory blocks this choice," implying none
-   currently applies. Everything expensive in the ADR hangs off that single line: a
+1. **K3: independent design review of ADR-0007.** Press on exactly one thing.
+   **Alternative 2** rejects the stock bundled SQLCipher 4.5.7 because it "is not 4.17.0, which
+   incorporates current upstream SQLite fixes." That is a preference for newer, not a named
+   threat, and section 1 itself says "a relevant advisory blocks this choice," implying none
+   currently applies. Everything expensive in the ADR hangs off that one line: a
    repository-local patch of `libsqlite3-sys`, vendored OpenSSL with pinned Configure
    transcripts, pinned NASM, three-OS byte-comparison of regenerated amalgamations, a CycloneDX
-   SBOM, and OSV scanning. That is plausibly more work than the rest of M2 combined, and
-   maintaining a local patch of a C crypto library's build glue is a standing burden. Either an
-   advisory is named, or the work stages: ship the store on the stock bundle for M2 and track
-   the reproducibility program as its own ADR. Both are defensible; "newer is better" is not,
-   at this price.
+   SBOM, OSV scanning. That is plausibly more work than the rest of M2 combined and commits the
+   project to maintaining a fork of a C crypto library's build glue indefinitely. The review
+   question is not "is this well designed," because it is. It is: **does a named advisory
+   affecting 4.5.7's embedded SQLite in this usage exist?** If yes, the overlay is justified. If
+   no, stage it: M2 ships on the stock bundle and the reproducibility program becomes its own
+   ADR. K3 owns cargo-audit and cargo-deny, which makes it the right agent to answer that rather
+   than accept an assertion. The rest of the ADR is strong and the verdict should say so.
+2. **charge: two decisions, and they are separate.**
+   (a) Accept or reject ADR-0007 after the review.
+   (b) The acceptance-criterion change, which must NOT ride along inside (a). ADR-0007 narrows
+   PLAN section 9 M2's "past messages unreadable" to a persisted-state boundary: current MLS
+   secret state cannot decrypt old-epoch ciphertext, but deliberately retained decrypted history
+   stays readable to anyone holding the database encryption key. **Advisor position: the
+   narrowing is correct.** MLS forward secrecy is a property of key material, not of a local
+   plaintext archive, and Signal behaves the same way; making retained history unreadable is a
+   retention feature, which the ADR defers to a separate design. AGENTS.md reserves
+   acceptance-criterion changes to charge specifically, so it needs a conscious call. The
+   companion doc edits on main deliberately hold this line in each affected file, so nothing has
+   landed by default.
+3. **charge: a staffing decision.** Sol is out of usage quota for the week and the store cannot
+   be built without that lane. Options: a temporary core-seat swap logged under rule 12
+   (`PLAN-CORE.md` already says this lane is "always staffed with the strongest available
+   model," so the mechanism exists); or wait for quota. **Not an option: giving it to K3**,
+   which owns the forward-secrecy test that proves the store works, so it would author both the
+   component and its proof. **Also not an option: the advisor**, which does not write
+   implementation code and is the party that verifies everyone else's.
+4. **Build the store**, then `device_compromise_past_messages_unreadable_fs` (K3), then the
+   **integration checkpoint**, then charge declares M2.
+5. ADR-0006 follow-ups A-D remain binding, tracked, not started.
 
-2. **charge: an explicit acceptance-criterion decision, separate from accepting the ADR.**
-   ADR-0007 replaces PLAN §9 M2's "past messages unreadable" with a narrower persisted-state
-   boundary: current MLS secret state cannot decrypt old-epoch ciphertext, but deliberately
-   retained decrypted history stays readable to anyone holding the database encryption key.
-   Advisor position: the narrowing is CORRECT. MLS forward secrecy is a property of key
-   material, not of a local plaintext archive, and Signal behaves the same way; making retained
-   history unreadable is a retention feature, which the ADR defers to a separate design. But
-   AGENTS.md reserves acceptance-criterion changes to charge specifically, so this must be a
-   conscious decision rather than something inherited by accepting an ADR. Do not let it ride
-   along silently.
+Outstanding from Sol when quota resets: the `#39` delta re-review against `33fcfe9`, and a
+review of K3's merged exit-AC work at `295d829`. K3 already completed the mirror-image review of
+Sol's `#47` against the merged commit and found nothing.
 
-3. **Sol: build the store**, once ADR-0007 is accepted.
-4. **K3: `device_compromise_past_messages_unreadable_fs`**, the fifth and last exit criterion,
-   once the store lands. K3 deliberately did not write it against in-memory state, and was right
-   not to: its note in `crates/test-harness/tests/m2_dm.rs` records that an in-memory FS test
-   "would pass while proving nothing."
-5. **Integration checkpoint**, then charge declares M2. All lanes pass the multi-client harness
-   together before anyone starts M3.
-6. ADR-0006 follow-ups A-D remain binding, tracked, not started (A role isolation + bootstrap,
-   B startup min-version, C risk-classification enforcement, D remaining probes).
+Deliberately NOT started: Grok's real-core desktop wiring. Unblocked, but M3 scope, held by the
+integration checkpoint. Being unblocked is not the same as being in scope.
 
-Outstanding from Sol, both small: the #39 delta re-review against `33fcfe9` (never posted before
-charge merged it), and a review of K3's merged exit-AC work at `295d829`. K3 already ran the
-equivalent review on Sol's #47 against the merged commit and found nothing.
+## Advisor report, 2026-07-25
 
-Deliberately NOT started: Grok's real-core desktop wiring. It is genuinely unblocked now that
-citadel-core is on main, and it is M3 scope, so the integration checkpoint holds it. Being
-unblocked is not the same as being in scope.
+**What the day moved.** M2 went from two unreviewed PRs to four of five exit criteria running as
+standing CI gates on main. Merged in order: `#47` citadel-core respin (`9a74d94`), `#39`
+delivery + migration CORE (`33fcfe9`), `#46` repo cleanup (`ce73cb9`), `#48` M2 final lap
+(`1f4e533`), `#49` exit-AC harness (`295d829`), `#50` ADR-0007 queue (`3d9d232`), `#51` shutdown
+snapshot (`673796d`), `#52` ADR-0007 rescue (`7592a26`), `#53` Sol progress report (`9afd706`).
+
+**Repo hygiene.** Remote branches went 32 to 1. Twenty-three were already merged, five were
+verifiably superseded, the rest were live PR heads that closed during the day. Every deleted SHA
+is recorded below so any deletion reverses with one push. The structural defect behind the mess
+is fixed in AGENTS.md rule 2: branches are deleted on merge, and status files land on main
+rather than sitting on an unmerged branch.
+
+**Verification work that changed outcomes.** Three agent findings were independently confirmed
+against source before endorsement rather than taken on report: sqlx-core 0.8.6's `run_direct`
+really does skip `conn.unlock()` on every early return; `add_members` really took no verifier;
+`merge_staged_commit` really appeared nowhere in citadel-core. Two additional defects came out
+of that verification that neither reviewer had named: `migrate_with_bounds` also leaked its
+session settings back to the pool on the **success** path, and the test documented as pinning
+swapped-KeyPackage coverage actually asserted the opposite direction. One conflict was caught
+before it bit: `#46` and `#47` both created `docs/status/sol.md`, an add/add collision Sol had
+described as a possible rebase; `#46` was restructured so the two could merge in either order.
+
+**Advisor errors this session, recorded because the process depends on them being visible.**
+
+1. **The lock-cleanup directive was wrong on the cancellation path.** I told K3 to release the
+   advisory lock on the way out. K3 correctly refused to do that after a `tokio::time::timeout`,
+   because a dropped future may leave a statement in flight and the cleanup SQL would queue
+   behind it on untrustworthy protocol state; it closed the connection instead. Following my
+   instruction literally would have hung. The reasoning was K3's, not mine.
+2. **Two code PRs merged without their delta re-reviews.** On charge's instruction, and I said
+   so at the time, but the effect is that the independent second look never happened on `#47`
+   and `#39`, and I had written the review directives myself. K3 later closed its half against
+   the merged commit and found nothing; Sol's half is still outstanding. The pairing discipline
+   is what has caught every real defect this milestone, so this should stay an exception rather
+   than becoming precedent.
+3. **I suspected a fabricated version pin that was real.** NASM 3.02 looked wrong to me; it
+   shipped in June 2026, after my own knowledge cutoff. The skepticism was reasonable given this
+   lane's track record, but the conclusion would have been wrong, and the lesson is to check
+   before flagging rather than after. `openmls_sqlite_storage` 0.2.0 checked out too.
+
+**Judgment calls made and their reasoning, so they can be argued with later.**
+
+- Kept the local encrypted store inside M2 rather than deferring it to M5. Deferring would have
+  closed the milestone on a forward-secrecy criterion that had been quietly weakened, and FS is
+  one of the properties this project exists to provide.
+- Kept Grok parked despite being idle and cheap, because the work that unblocked is M3 scope.
+- Moved the M3 churn rig from Grok to K3 on model-strength evidence, logged in AGENTS.md.
+- Made no roster swap. Fable 5 has the strongest published scorecard and `PLAN-CORE.md`
+  authorizes paying premium for the core seat, but the margins sit inside harness noise and
+  nothing this project has lost time to was a capability gap. Every real defect this milestone
+  was caught by cross-review, which is a process property, not a model property.
+- Rescued Sol's ADR but refused to build the store. Committing an offline agent's finished
+  document prevents loss and decides nothing; writing the component that holds users' plaintext
+  and MLS secrets at rest would make its only reviewer its author.
 
 ## Lane assignment rationale (2026-07-25)
 
@@ -109,12 +147,13 @@ A better model would not have caught the one-sided INV-4 check; K3 reading the c
 
 ## State
 
-- main `ce73cb9`. M1 closed and declared. M2 NOT closed. ADRs 0001-0006 all ACCEPTED
-  (0006 + Amendment 1 = `search_path = public, pg_temp`).
+- main `9afd706`. M1 closed and declared. M2 NOT closed. ADRs 0001-0006 all ACCEPTED
+  (0006 + Amendment 1 = `search_path = public, pg_temp`). ADR-0007 is on main and PROPOSED.
 - Zero open PRs. Remote is `main` only. Merged 2026-07-25: **#47** `9a74d94` (citadel-core:
   initiator KT checks + staged-commit processing), **#39** `33fcfe9` (delivery-service message
   path + WS gateway + ADR-0006 migration CORE), **#46** `ce73cb9` (repo cleanup), **#48**
-  `1f4e533` (M2 final lap), **#49** `295d829` (M2 exit-AC harness).
+  `1f4e533` (M2 final lap), **#49** `295d829` (M2 exit-AC harness), **#50** `3d9d232`,
+  **#51** `673796d`, **#52** `7592a26` (ADR-0007 rescue), **#53** `9afd706` (Sol report).
 - M2 exit criteria: F2 three-client DM, F4 roundtrip, delivery-table no-plaintext scan, PCS
   recovery, and the adversarial swapped-KeyPackage test are all GREEN and, verified in the main
   run log rather than the badge, actually execute on every push to main. The adversarial test
@@ -144,34 +183,29 @@ A better model would not have caught the one-sided INV-4 check; K3 reading the c
   sandbox user), so the advisor cannot inspect or clean them. Three finished ones remain on
   disk; only charge or Sol can remove them.
 
-## Shutdown snapshot 2026-07-25
+## Day-close snapshot 2026-07-25
 
-- **main `3d9d232`. Zero open PRs. Remote is `main` and nothing else.** Last full CI run on main
-  (`295d829`, run 30141369632) green across all seven jobs, log-verified. The two advisor commits
-  after it are docs-only and skip CI by design.
-- **M1 closed and declared. M2 NOT closed.** Four of five exit criteria are standing CI gates.
-  The fifth, `device_compromise_past_messages_unreadable_fs`, is blocked on the store, which is
-  blocked on ADR-0007, which at shutdown was uncommitted (see FIRST ACTION).
-- **Nothing is in flight.** No agent had work in review at shutdown. The only unlanded work is
-  Sol's uncommitted ADR-0007.
-- **Two decisions are open and both are charge's**, recorded in queue items 1 and 2: whether
-  ADR-0007's SQLCipher overlay is justified without a named advisory, and the explicit
-  acceptance-criterion change that AGENTS.md reserves to charge. Neither has been decided. Do not
-  let the second ride along inside an ADR acceptance.
-- **charge open calls, still open and carried across three sessions now:** LICENSE file (public
-  repo, all-rights-reserved by default), gh-token tightening, Citadel trademark check.
+- **main `9afd706`. Zero open PRs. Remote is `main` and nothing else.** Last full CI run on main
+  (`295d829`, run 30141369632) green across all seven jobs, log-verified. Every commit after it
+  is docs-only and skips CI by design.
+- **M1 closed and declared. M2 NOT closed.** Four of five exit criteria are standing CI gates on
+  main. The fifth, `device_compromise_past_messages_unreadable_fs`, is blocked on the store,
+  which is blocked on ADR-0007's review and acceptance, which is blocked on K3 picking it up.
+- **Nothing is in flight and no work is uncommitted.** The ADR-0007 rescue closed the one
+  fragile thing from the earlier shutdown snapshot: it had existed only as untracked files in a
+  sandbox worktree and is now on main at `7592a26`.
+- **Sol is out of usage quota for the week** (charge, 2026-07-25). Its lane is stopped. Its
+  progress report, what it owes, and its track-record notes are in `docs/status/sol.md`.
+- **Three decisions are open and all are charge's:** accept or reject ADR-0007; the separate
+  acceptance-criterion change that must not ride along inside that acceptance; and the staffing
+  call on who builds the store while Sol is out. See queue items 1 through 3.
+- **charge open calls, now carried across four sessions:** LICENSE file (public repo,
+  all-rights-reserved by default), gh-token tightening, Citadel trademark check.
 - **Local machine housekeeping** (advisor cannot do these): the compose stack may still be up
-  (`docker compose -f deploy/docker-compose.yml down -v`, and note `-v` drops volumes). Sol has
-  five worktrees on disk, four of them finished work
-  (`citadel-sol-adr0006-search-path`, `citadel-sol-audit-parity`, `citadel-sol-pr38`,
-  `citadel-sol-pr39-review` detached, plus `C:/tmp/Citadel-sol-m2-core-respin`). They are owned
-  by the `CodexSandboxOffline` Windows account, so only charge or Sol can remove them. The live
-  one to keep until ADR-0007 lands is `C:/tmp/Citadel-sol-m2-local-store-adr`.
-- **Process note for whoever resumes:** this session merged two code PRs without their delta
-  re-reviews, on charge's instruction. K3 later ran its review against the merged commit and
-  found nothing; Sol's equivalent review of `33fcfe9` is still outstanding, along with a review
-  of `295d829`. The pairing discipline is what has caught every real defect this milestone, so
-  it is worth closing that loop rather than letting it lapse into precedent.
+  (`docker compose -f deploy/docker-compose.yml down -v`, and `-v` drops volumes). Sol has
+  several finished worktrees on disk owned by the `CodexSandboxOffline` Windows account, so only
+  charge or Sol can remove them. `C:/tmp/Citadel-sol-m2-local-store-adr` is now safe to remove:
+  its contents are on main.
 
 ## Suppression config (both needed — cargo-audit AND cargo-deny run)
 
