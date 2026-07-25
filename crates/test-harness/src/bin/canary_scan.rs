@@ -17,8 +17,12 @@
 //!
 //! Injection points cover the paths that exist in M1+M2 (M2: the
 //! delivery-service message path, ADR-0005 — including an authenticated
-//! probe that must die in `SubmitMessageRequest::validate`). Every new
-//! endpoint that accepts client data MUST add an injection point here.
+//! probe that must die in `SubmitMessageRequest::validate`, and REAL F4 DM
+//! plaintext: canaries sent as encrypted DM content through the live
+//! stack, so `group_messages.payload_bytes`, `welcome_deliveries`, and the
+//! delivery-service logs are scanned for content only a client may hold).
+//! Every new endpoint that accepts client data MUST add an injection point
+//! here.
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
@@ -77,7 +81,8 @@ async fn inject(args: &[String]) -> Result<()> {
 
     let points = injection_points(&endpoints, &delivery_token);
     let run_id = uuid::Uuid::new_v4().simple().to_string();
-    let values = canary::generate(&run_id, points.len());
+    const DM_CANARIES: usize = 2;
+    let values = canary::generate(&run_id, points.len() + DM_CANARIES);
     let mut records = Vec::new();
 
     for (i, (point, request)) in points.into_iter().enumerate() {
@@ -127,6 +132,12 @@ async fn inject(args: &[String]) -> Result<()> {
             http_status: status.as_u16(),
         });
     }
+
+    // F4 DM canaries (ADR-0005 §2): REAL encrypted DM content through the
+    // live stack — the canaries that make the group_messages /
+    // welcome_deliveries / delivery-log scan mean something.
+    let dm_values = &values[values.len() - DM_CANARIES..];
+    records.extend(inject_dm_canaries(&http, &endpoints, dm_values).await?);
 
     let manifest = CanaryManifest {
         run_id,
@@ -337,6 +348,94 @@ fn submit_probe_body(canary: &str) -> serde_json::Value {
         },
         "idempotency_key": uuid::Uuid::nil(),
     })
+}
+
+/// Send canaries as REAL DM plaintext through the full F2+F4 path
+/// (ADR-0005 §2): two registered accounts, KeyPackage publish + consuming
+/// fetch, MLS group create/join with KT verification against the live log
+/// (INV-4), then one application message per canary over the REST submit
+/// path. Driven by citadel-core's actual engine via `test_harness::dm` —
+/// a failure anywhere makes the run unproven (exit 2), never skipped.
+async fn inject_dm_canaries(
+    http: &reqwest::Client,
+    endpoints: &StackEndpoints,
+    values: &[String],
+) -> Result<Vec<CanaryRecord>> {
+    use citadel_proto::delivery::GatewayClientFrame;
+    use citadel_proto::envelope::EnvelopeKind;
+    use citadel_proto::ids::GroupId;
+    use test_harness::client::TestClient;
+    use test_harness::dm::{self, log_anchor, DmClient, LiveKtVerifier};
+
+    let mut verifier = LiveKtVerifier::new(
+        TestClient::new(http.clone(), endpoints.auth.clone()),
+        log_anchor(),
+    );
+    let register = |tag: &str| {
+        let http = http.clone();
+        let endpoints = endpoints.clone();
+        let tag = tag.to_string();
+        async move {
+            DmClient::register(
+                http,
+                &endpoints.auth,
+                &endpoints.delivery,
+                &format!("canary-dm-{tag}-{}", uuid::Uuid::new_v4().simple()),
+            )
+            .await
+        }
+    };
+    let (a, leaf_a) = register("a").await?;
+    let (b, leaf_b) = register("b").await?;
+    verifier.register_leaf(a.account_id, leaf_a);
+    verifier.register_leaf(b.account_id, leaf_b);
+    for c in [&a, &b] {
+        if !verifier.attest(c.account_id, &c.identity_pubkey).await {
+            bail!("KT attestation failed for canary DM client");
+        }
+    }
+
+    b.publish_key_packages(1).await?;
+    let key_packages = a.fetch_key_packages(&endpoints.auth, b.account_id).await?;
+    let gid = GroupId::new();
+    let mut group_a = a.create_group(gid)?;
+    let out = a.add_members(&mut group_a, &key_packages, &verifier)?;
+    a.submit(
+        gid,
+        EnvelopeKind::Welcome,
+        group_a.epoch(),
+        &out.welcome_bytes,
+        vec![b.device_id],
+    )
+    .await?;
+
+    // B consumes the Welcome over the real delivery path (gateway push)
+    // and joins after KT verification, so welcome_deliveries carries real
+    // addressing rows for the scan.
+    let mut ws = b.gateway_connect().await?;
+    let welcome = dm::recv_message_for(&mut ws, gid, EnvelopeKind::Welcome).await?;
+    let _group_b = b.join_from_welcome(&welcome.payload_bytes()?, &verifier)?;
+    dm::send_frame(
+        &mut ws,
+        &GatewayClientFrame::Subscribe {
+            group_ids: vec![gid],
+        },
+    )
+    .await?;
+    let _ = dm::recv_frame(&mut ws).await?;
+
+    let mut records = Vec::new();
+    for value in values {
+        a.send_text(&mut group_a, gid, value.as_bytes()).await?;
+        records.push(CanaryRecord {
+            value: value.clone(),
+            injection_point:
+                "delivery-service F4 DM application message (MLS ciphertext into group_messages)"
+                    .to_string(),
+            http_status: 200,
+        });
+    }
+    Ok(records)
 }
 
 /// Register a throwaway account + first device and authenticate it

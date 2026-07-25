@@ -2983,21 +2983,27 @@ name = "test-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64",
+ "citadel-core",
  "citadel-proto",
  "citadel-service-crypto",
  "ed25519-dalek",
  "futures-util",
  "kt-log",
+ "openmls",
+ "openmls_traits",
  "reqwest",
  "serde",
  "serde_json",
  "sqlx",
+ "tls_codec",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

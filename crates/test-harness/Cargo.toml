@@ -20,6 +20,17 @@ path = "src/bin/canary_scan.rs"
 
 [dependencies]
 citadel-proto = { workspace = true }
+# The harness stands in for real clients in the M2 DM evidence tests: it
+# drives citadel-core's actual MLS engine (never a reimplementation) against
+# the live stack. Client-side crypto is legitimate here (INV-2; the rule-6
+# confinement check covers only the four service crates).
+citadel-core = { workspace = true, features = ["testing"] }
+openmls = "0.8"
+openmls_traits = "0.5"
+tls_codec = "0.4"
+zeroize = "1"
+# The dishonest-DS proxy for the adversarial suite (dishonest.rs).
+axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -29,9 +40,15 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 base64 = { workspace = true }
+# WS client for the gateway path in dm.rs (lib): plain ws:// on the compose
+# stack (TLS termination is a deploy concern, M8); "handshake" only, so no
+# TLS backend enters the graph (deny.toml bans native-tls/openssl) and the
+# version stays lockstep with axum 0.8's ws support.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+futures-util = "0.3"
 # Evidence scans against real PostgreSQL (PLAN.md §4 stack). Dynamic queries
 # only; the scanner needs no compile-time-checked macros.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid"] }
 # Client-side signing for tests (testkeys): the harness stands in for the
 # client, which legitimately owns crypto (INV-2; ADR-0002 §4 rev 2 scope
 # note — the confinement check covers only the four service crates).
@@ -42,9 +59,3 @@ kt-log = { workspace = true }
 
 [dev-dependencies]
 citadel-service-crypto = { workspace = true }
-# WS client for the M2 gateway stack tests. Plain ws:// on the compose
-# stack (TLS termination is a deploy concern, M8); "handshake" only, so no
-# TLS backend enters the graph (deny.toml bans native-tls/openssl) and the
-# version stays lockstep with axum 0.8's ws support.
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
-futures-util = "0.3"
