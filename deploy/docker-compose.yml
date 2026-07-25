@@ -59,6 +59,25 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-citadelminio}
     restart: "no"
 
+  # Canonical migration job (ADR-0006 §1, §3): the ONLY component that
+  # applies schema changes. One-shot; every database-backed service gates on
+  # its successful completion (service_completed_successfully) — a failed
+  # migration leaves services stopped.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.service
+      args:
+        SERVICE: citadel-migrations
+        BIN: citadel-migrate
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-citadel}:${POSTGRES_PASSWORD:-citadel}@postgres:5432/${POSTGRES_DB:-citadel}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   auth-service:
     build:
       context: ..
@@ -79,6 +98,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
       interval: 5s
@@ -101,6 +122,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health"]
       interval: 5s
@@ -123,6 +146,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8083/health"]
       interval: 5s

@@ -11,7 +11,6 @@
 
 use auth_service::auth::{self, AuthError, CHALLENGE_TTL_SECS, TOKEN_TTL_SECS};
 use auth_service::server::{self, AppState, KtState};
-use auth_service::store;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -43,7 +42,9 @@ async fn fresh_pool() -> PgPool {
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
-    store::migrate(&pool).await.expect("apply migrations");
+    citadel_migrations::migrate(&pool)
+        .await
+        .expect("apply canonical migrations (ADR-0006)");
     pool
 }
 

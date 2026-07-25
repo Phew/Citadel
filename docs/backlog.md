@@ -22,6 +22,8 @@ sneak them into current PRs. charge picks them up (or assigns them) explicitly.
 
 ## Harness (k3 lane, later milestones)
 
-- Canary injection points for M2+ message paths (ciphertext-only assertion)
-  and M5 blobstore bucket scanning are designed-for but not built in M1;
-  tracked here so the extension isn't forgotten.
+- M5 blobstore bucket scanning for the canary scan is designed-for but not
+  built in M1; tracked here so the extension isn't forgotten. (The M2
+  message-path injection points landed with the M2 delivery build:
+  authenticated + unauthenticated probes against POST
+  /v1/groups/{gid}/messages, rejected before the store layer.)

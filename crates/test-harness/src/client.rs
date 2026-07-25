@@ -118,6 +118,20 @@ impl TestClient {
         decode_rejection(resp).await
     }
 
+    /// POST with a bearer token expecting rejection (negative paths on
+    /// authenticated endpoints): returns the status and wire error contract.
+    pub async fn post_json_bearer_expect_error<Req: Serialize>(
+        &self,
+        path: &str,
+        token: &str,
+        body: &Req,
+    ) -> Result<(StatusCode, ErrorResponse), ServiceError> {
+        let resp = self
+            .send(self.http.post(self.url(path)).bearer_auth(token).json(body))
+            .await?;
+        decode_rejection(resp).await
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base, path)
     }

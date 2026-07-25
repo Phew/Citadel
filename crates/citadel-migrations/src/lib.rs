@@ -1,0 +1,545 @@
+//! citadel-migrations: the canonical migration corpus and runner for the
+//! shared `citadel` database (ADR-0006).
+//!
+//! One append-only corpus, one production migrator. Services never
+//! self-migrate at startup; the `citadel-migrate` binary is the only
+//! production component that applies schema changes, and database-backed
+//! tests initialize through the same [`migrate`] entry point so production
+//! and test schema construction cannot drift.
+//!
+//! Safety posture (ADR-0006 §1):
+//! - `ignore_missing` stays at its default **false** and default sqlx
+//!   locking is kept — a partial view of the shared history is exactly the
+//!   failure this ADR removes.
+//! - [`migrate`] pins `search_path` to `public, pg_temp` (ADR-0006
+//!   Amendment 1) and fully qualifies `public._sqlx_migrations`; a migration
+//!   history table in ANY other schema is a fatal configuration error, never
+//!   an independent service history.
+//! - Before any new SQL — and UNDER the migration advisory lock — the
+//!   exact-prefix preflight compares successful applied rows against the
+//!   embedded corpus by version AND SHA-384 checksum. This is ADDITIONAL to
+//!   sqlx's own VersionMissing / VersionMismatch / dirty-state / locking
+//!   behavior — sqlx's checks are not bypassed, they are preceded.
+//! - Bounds: 60s lock acquisition (`lock_timeout`), 300s per statement
+//!   (`statement_timeout`), plus a tokio backstop over the whole run. A
+//!   timeout is fatal; a second runner behind a held lock fails closed
+//!   instead of hanging.
+//! - Exit cleanup is unconditional: `pg_advisory_unlock_all()` plus
+//!   `RESET` of every session setting on success AND error alike
+//!   (sqlx's `run_direct` leaks its advisory hold on every error path,
+//!   and pooled connections return without a session reset); on the
+//!   tokio backstop the mid-flight connection is closed instead, since
+//!   no SQL can be trusted on it. A connection never returns to the pool
+//!   carrying a lock or a setting.
+
+use serde::Deserialize;
+use sqlx::migrate::Migrator;
+use sqlx::{PgConnection, PgPool, Row};
+use std::time::Duration;
+use thiserror::Error;
+
+/// ADR-0006 §1 bound: migration lock acquisition. A held advisory lock must
+/// make a second runner fail closed within about this long, never hang.
+pub const LOCK_TIMEOUT_SECS: u64 = 60;
+/// ADR-0006 §1 bound: per-migration (per-statement) execution.
+pub const MIGRATION_STATEMENT_TIMEOUT_SECS: u64 = 300;
+/// ADR-0006 §1 as amended (Amendment 1, ACCEPTED): `public, pg_temp`.
+/// `pg_catalog` is deliberately UNNAMED so PostgreSQL searches it implicitly
+/// before the listed schemas for lookup — naming it after `public` would let
+/// objects in `public` shadow built-ins, which is the rejected ordering.
+/// `public` stays the first EXPLICIT schema, so sqlx's unqualified
+/// `CREATE TABLE _sqlx_migrations` lands there (PostgreSQL creates
+/// unqualified objects in the first valid schema of `search_path`), and
+/// `pg_temp` named last keeps the temporary schema from shadowing anything.
+const SEARCH_PATH: &str = "public, pg_temp";
+
+/// The embedded canonical corpus. `sqlx::migrate!` embeds the WORKING-TREE
+/// bytes at compile time, so `.gitattributes` pins these files to LF — a
+/// CRLF checkout would silently change the embedded checksums.
+///
+/// Defaults are load-bearing: `ignore_missing = false`, locking on.
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+#[derive(Debug, Error)]
+pub enum MigrateError {
+    /// Exact-prefix preflight failed: unknown/missing/non-prefix applied
+    /// version, checksum drift, a dirty row, or a history table in another
+    /// schema. No new SQL was executed.
+    #[error("migration preflight failed: {0}")]
+    Preflight(String),
+    #[error("database error: {0}")]
+    Db(#[from] sqlx::Error),
+    #[error("sqlx migrator error: {0}")]
+    Sqlx(#[from] sqlx::migrate::MigrateError),
+    /// The tokio backstop over the whole run fired. The statement-level
+    /// bounds (lock_timeout/statement_timeout) should fire first; this is
+    /// fail-closed defense in depth.
+    #[error("migration run exceeded its overall bound of {0:?} (ADR-0006 §1)")]
+    Timeout(Duration),
+}
+
+/// The single entry point for applying the canonical corpus: used by the
+/// `citadel-migrate` binary AND by every database-backed test (ADR-0006 §1).
+pub async fn migrate(pool: &PgPool) -> Result<(), MigrateError> {
+    migrate_with_bounds(pool, LOCK_TIMEOUT_SECS, MIGRATION_STATEMENT_TIMEOUT_SECS).await
+}
+
+/// The margin added to the statement-level bounds when computing the
+/// tokio backstop over the whole run.
+const BACKSTOP_MARGIN_SECS: u64 = 60;
+
+/// The tokio backstop over the whole apply: lock bound + per-migration
+/// bounds + margin. The statement-level settings are the primary
+/// mechanism; this is fail-closed defense in depth.
+fn overall_backstop(lock_timeout_secs: u64, statement_timeout_secs: u64) -> Duration {
+    let n_migrations = MIGRATOR.migrations.len() as u64;
+    Duration::from_secs(
+        lock_timeout_secs + statement_timeout_secs * n_migrations + BACKSTOP_MARGIN_SECS,
+    )
+}
+
+/// [`migrate`] with explicit bounds. The 60s/300s defaults are pinned by
+/// ADR-0006 §1; this seam exists so the lock-timeout evidence test can
+/// prove fail-closed behavior in seconds instead of a minute.
+pub async fn migrate_with_bounds(
+    pool: &PgPool,
+    lock_timeout_secs: u64,
+    statement_timeout_secs: u64,
+) -> Result<(), MigrateError> {
+    let backstop = overall_backstop(lock_timeout_secs, statement_timeout_secs);
+    migrate_inner(pool, lock_timeout_secs, statement_timeout_secs, backstop).await
+}
+
+/// [`migrate_with_bounds`] with an explicit tokio backstop. Hidden: it
+/// exists so the cancellation-path evidence test can fire the backstop in
+/// seconds instead of minutes. Production callers use [`migrate`] or
+/// [`migrate_with_bounds`], which compute the backstop from the ADR-0006
+/// §1 bounds.
+#[doc(hidden)]
+pub async fn migrate_with_backstop(
+    pool: &PgPool,
+    lock_timeout_secs: u64,
+    statement_timeout_secs: u64,
+    backstop: Duration,
+) -> Result<(), MigrateError> {
+    migrate_inner(pool, lock_timeout_secs, statement_timeout_secs, backstop).await
+}
+
+async fn migrate_inner(
+    pool: &PgPool,
+    lock_timeout_secs: u64,
+    statement_timeout_secs: u64,
+    backstop: Duration,
+) -> Result<(), MigrateError> {
+    // One connection for everything: the session settings below must cover
+    // the lock, the preflight, AND the migrator's own statements.
+    let mut conn = pool.acquire().await?;
+
+    let run = run_on_connection(
+        &mut conn,
+        lock_timeout_secs,
+        statement_timeout_secs,
+        backstop,
+    )
+    .await;
+
+    // On the tokio backstop the run future was DROPPED mid-flight: a
+    // statement may still be executing server-side, so the connection's
+    // protocol state is untrustworthy and no cleanup SQL can be safely
+    // issued on it (it would queue behind the orphaned statement). Close
+    // the session instead: the dying backend releases every advisory lock
+    // and session setting it held, the poisoned connection never returns
+    // to the pool, and the server-side bounds (lock_timeout /
+    // statement_timeout) kill any orphaned statement within the ADR
+    // limits.
+    if matches!(run, Err(MigrateError::Timeout(_))) {
+        let _ = conn.close().await;
+        return run;
+    }
+
+    // Every other exit — success or error — cleans up unconditionally.
+    // sqlx's run_direct unlocks only on its success path (verified against
+    // sqlx-core 0.8.6 migrate/migrator.rs: every `?` after conn.lock()
+    // returns with that acquisition still held), and a dropped
+    // PoolConnection returns to the pool WITHOUT a session reset
+    // (pool/connection.rs return_to_pool), so a leaked hold or a leaked
+    // SET would persist on the pooled connection and poison its next
+    // tenant. pg_advisory_unlock_all() drops our hold AND any sqlx hold,
+    // however deeply nested; the RESETs restore the session defaults.
+    let cleanup = cleanup_session(&mut conn).await;
+    if cleanup.is_err() {
+        // A connection we cannot clean must not return to the pool
+        // carrying unknown state.
+        let _ = conn.close().await;
+    }
+    run?;
+    cleanup?;
+    Ok(())
+}
+
+/// The body of a migration run on one acquired connection: pin the session
+/// settings, take the migration lock, preflight under it, apply. Any error
+/// leaves cleanup to the caller (`migrate_inner`), which owns the
+/// connection's exit path.
+async fn run_on_connection(
+    conn: &mut PgConnection,
+    lock_timeout_secs: u64,
+    statement_timeout_secs: u64,
+    backstop: Duration,
+) -> Result<(), MigrateError> {
+    sqlx::query(&format!("SET search_path TO {SEARCH_PATH}"))
+        .execute(&mut *conn)
+        .await?;
+    // SET does not take bind parameters; both values are u64s we control.
+    sqlx::query(&format!("SET lock_timeout = '{lock_timeout_secs}s'"))
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(&format!(
+        "SET statement_timeout = '{statement_timeout_secs}s'"
+    ))
+    .execute(&mut *conn)
+    .await?;
+
+    // ADR-0006 §1: the exact-prefix preflight runs UNDER the migration
+    // lock. Without this, a concurrent runner can change history between
+    // the preflight read and the migrator's own lock acquisition (TOCTOU).
+    // We take sqlx's OWN advisory lock id: session-level advisory locks are
+    // re-entrant on one connection, so run_direct's acquire/release nests
+    // inside this hold, and every canonical runner — ours or a bare
+    // citadel-migrate — serializes on the same lock. The lock_timeout set
+    // above bounds this wait: a held lock fails closed, never hangs.
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&mut *conn)
+        .await?;
+    let lock_id = sqlx_migration_lock_id(&database);
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_id)
+        .execute(&mut *conn)
+        .await?;
+
+    preflight(conn).await?;
+
+    // `run_direct` is sqlx's sanctioned path for a single
+    // already-acquired connection (`run` hits the Acquire "not general
+    // enough" limitation); it keeps the SAME connection, so the session
+    // settings above cover the migrator's lock and statements.
+    tokio::time::timeout(backstop, MIGRATOR.run_direct(&mut *conn))
+        .await
+        .map_err(|_| MigrateError::Timeout(backstop))??;
+    Ok(())
+}
+
+/// Unconditional exit-path cleanup (every non-cancellation outcome):
+/// release ALL advisory holds this session took — ours plus any sqlx
+/// `run_direct` leaked on an error path — and restore the session settings
+/// we pinned, so the pooled connection returns clean.
+async fn cleanup_session(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("RESET lock_timeout")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("RESET statement_timeout")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("RESET search_path").execute(&mut *conn).await?;
+    Ok(())
+}
+
+/// CRC-32 (ISO-HDLC), used to derive the SAME advisory lock id sqlx's
+/// PostgreSQL migrator uses (`0x3d32ad9e * CRC32(database name)`,
+/// sqlx-postgres 0.8.6 src/migrate.rs). The canonical evidence suite
+/// reimplements this independently as the oracle that pins the id.
+fn crc32_iso_hdlc(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn sqlx_migration_lock_id(database_name: &str) -> i64 {
+    0x3d32_ad9e_i64.wrapping_mul(crc32_iso_hdlc(database_name.as_bytes()) as i64)
+}
+
+/// One applied row of `public._sqlx_migrations`, as the preflight reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedRow {
+    pub version: i64,
+    pub checksum: Vec<u8>,
+    pub success: bool,
+}
+
+/// The exact-prefix preflight (ADR-0006 §1), additional to sqlx's own
+/// validation. Runs on the migration connection before any new SQL.
+async fn preflight(conn: &mut PgConnection) -> Result<(), MigrateError> {
+    // A migration history in any schema other than `public` is a fatal
+    // configuration error — never an independent service history.
+    let foreign: Vec<String> = sqlx::query(
+        "SELECT n.nspname AS schema_name \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = '_sqlx_migrations' AND c.relkind IN ('r', 'p') \
+           AND n.nspname <> 'public' \
+         ORDER BY n.nspname",
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(|r| r.get("schema_name"))
+    .collect();
+    if !foreign.is_empty() {
+        return Err(MigrateError::Preflight(format!(
+            "found _sqlx_migrations outside the public schema ({}); \
+             ADR-0006 §1 makes a second migration history fatal",
+            foreign.join(", ")
+        )));
+    }
+
+    let exists: bool =
+        sqlx::query("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL AS e")
+            .fetch_one(&mut *conn)
+            .await?
+            .get("e");
+    if !exists {
+        // Fresh database: empty history is a prefix of every corpus.
+        return Ok(());
+    }
+
+    let applied: Vec<AppliedRow> = sqlx::query(
+        "SELECT version, checksum, success FROM public._sqlx_migrations ORDER BY version ASC",
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(|r| AppliedRow {
+        version: r.get("version"),
+        checksum: r.get("checksum"),
+        success: r.get("success"),
+    })
+    .collect();
+
+    check_prefix(&applied, &MIGRATOR.migrations).map_err(MigrateError::Preflight)
+}
+
+/// Pure prefix comparison, unit-tested directly: `applied` (ordered by
+/// version) must exactly match a prefix of `corpus` by version AND SHA-384
+/// checksum. Any dirty row, unknown version, hole, drift, or history longer
+/// than the corpus is fatal.
+fn check_prefix(applied: &[AppliedRow], corpus: &[sqlx::migrate::Migration]) -> Result<(), String> {
+    if let Some(dirty) = applied.iter().find(|r| !r.success) {
+        return Err(format!(
+            "migration {:04} is recorded as failed (dirty); the database needs \
+             manual recovery before any new SQL runs",
+            dirty.version
+        ));
+    }
+    if applied.len() > corpus.len() {
+        return Err(format!(
+            "{} applied rows exceed the embedded corpus of {} migrations; an older \
+             migration artifact must never reinterpret or remove newer history (ADR-0006 §3)",
+            applied.len(),
+            corpus.len()
+        ));
+    }
+    for (i, row) in applied.iter().enumerate() {
+        let expected = &corpus[i];
+        if row.version != expected.version {
+            return Err(format!(
+                "applied version {:04} at position {} does not match corpus version {:04}: \
+                 the applied history is not an exact prefix of the canonical corpus \
+                 (unknown, missing, or reordered migration)",
+                row.version,
+                i + 1,
+                expected.version
+            ));
+        }
+        if row.checksum.as_slice() != expected.checksum.as_ref() {
+            return Err(format!(
+                "checksum drift on migration {:04}: the recorded SHA-384 does not match \
+                 the canonical file; history must be immutable (ADR-0006 §2)",
+                row.version
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------- Migration manifest (ADR-0006 §2) ----------
+
+const MANIFEST_JSON: &str = include_str!("../manifest.json");
+
+/// One manifest entry. The manifest records review responsibility and risk
+/// classification; it does not split execution history.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ManifestEntry {
+    pub version: i64,
+    pub filename: String,
+    /// SQLx SHA-384 checksum of the file bytes, hex.
+    pub sha384: String,
+    pub responsible_service: String,
+    /// Transaction mode (`tx` for every current migration).
+    pub tx: String,
+    /// expand | contract | data (recorded in CORE; fail-closed enforcement
+    /// is a later phase of ADR-0006).
+    pub risk: String,
+    pub recovery: String,
+    /// The ACCEPTED ADR governing the schema decision.
+    pub adr: String,
+}
+
+/// The embedded append-only manifest. Panics only if the committed file is
+/// not valid JSON — the unit tests and ci/check_migrations.py pin the shape.
+pub fn manifest() -> Vec<ManifestEntry> {
+    serde_json::from_str(MANIFEST_JSON).expect("embedded manifest.json must be valid")
+}
+
+#[cfg(test)]
+fn hex_decode(hex: &str) -> Vec<u8> {
+    assert!(
+        hex.len().is_multiple_of(2),
+        "hex string must have even length"
+    );
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("manifest sha384 must be hex"))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adr_bounds_are_the_pinned_values() {
+        assert_eq!(LOCK_TIMEOUT_SECS, 60, "ADR-0006 §1 lock bound");
+        assert_eq!(
+            MIGRATION_STATEMENT_TIMEOUT_SECS, 300,
+            "ADR-0006 §1 execution bound"
+        );
+    }
+
+    #[test]
+    fn manifest_is_well_formed_and_strictly_appending() {
+        let entries = manifest();
+        assert!(!entries.is_empty());
+        for w in entries.windows(2) {
+            assert!(
+                w[0].version < w[1].version,
+                "versions must strictly increase"
+            );
+        }
+        for e in &entries {
+            assert!(e.version > 0);
+            assert!(e.filename.ends_with(".sql"));
+            assert_eq!(e.sha384.len(), 96, "SHA-384 hex is 96 chars");
+            assert!(!e.responsible_service.is_empty());
+            assert!(!e.tx.is_empty());
+            assert!(["expand", "contract", "data"].contains(&e.risk.as_str()));
+            assert!(!e.recovery.is_empty());
+            assert!(!e.adr.is_empty());
+        }
+    }
+
+    /// The manifest must describe EXACTLY the embedded corpus: same versions,
+    /// same filenames, same SHA-384 checksums as sqlx computes at compile time.
+    #[test]
+    fn manifest_matches_embedded_corpus() {
+        let entries = manifest();
+        let corpus = &MIGRATOR.migrations;
+        assert_eq!(entries.len(), corpus.len());
+        for (entry, migration) in entries.iter().zip(corpus.iter()) {
+            assert_eq!(entry.version, migration.version);
+            assert_eq!(
+                entry.filename,
+                // sqlx derives the description from the filename: version
+                // prefix and .sql stripped, underscores rendered as spaces.
+                format!(
+                    "{:04}_{}.sql",
+                    migration.version,
+                    migration.description.replace(' ', "_")
+                ),
+                "manifest filename must match the embedded migration description"
+            );
+            assert_eq!(
+                hex_decode(&entry.sha384),
+                migration.checksum.as_ref(),
+                "manifest sha384 must equal the sqlx checksum of {:04}",
+                entry.version
+            );
+        }
+    }
+
+    fn row(version: i64, corpus: &[sqlx::migrate::Migration], success: bool) -> AppliedRow {
+        let checksum = corpus
+            .iter()
+            .find(|m| m.version == version)
+            .map(|m| m.checksum.as_ref().to_vec())
+            .unwrap_or_else(|| vec![0u8; 48]);
+        AppliedRow {
+            version,
+            checksum,
+            success,
+        }
+    }
+
+    #[test]
+    fn check_prefix_accepts_empty_and_exact_prefixes() {
+        let corpus = &MIGRATOR.migrations;
+        assert!(check_prefix(&[], corpus).is_ok());
+        let one = vec![row(1, corpus, true)];
+        assert!(check_prefix(&one, corpus).is_ok());
+        let full: Vec<_> = corpus
+            .iter()
+            .map(|m| row(m.version, corpus, true))
+            .collect();
+        assert!(check_prefix(&full, corpus).is_ok());
+    }
+
+    #[test]
+    fn check_prefix_rejects_dirty_row() {
+        let corpus = &MIGRATOR.migrations;
+        let applied = vec![row(1, corpus, false)];
+        let err = check_prefix(&applied, corpus).unwrap_err();
+        assert!(err.contains("failed"), "{err}");
+    }
+
+    #[test]
+    fn check_prefix_rejects_unknown_version() {
+        let corpus = &MIGRATOR.migrations;
+        let mut applied: Vec<_> = corpus
+            .iter()
+            .map(|m| row(m.version, corpus, true))
+            .collect();
+        applied.push(row(999, corpus, true));
+        let err = check_prefix(&applied, corpus).unwrap_err();
+        assert!(err.contains("exceed the embedded corpus"), "{err}");
+    }
+
+    #[test]
+    fn check_prefix_rejects_missing_and_reordered_versions() {
+        let corpus = &MIGRATOR.migrations;
+        // 0001 + 0003 without 0002: a hole is not a prefix.
+        let hole = vec![row(1, corpus, true), row(3, corpus, true)];
+        assert!(check_prefix(&hole, corpus).is_err());
+        // 0002 first: history that does not start at the corpus head.
+        let reordered = vec![row(2, corpus, true)];
+        assert!(check_prefix(&reordered, corpus).is_err());
+    }
+
+    #[test]
+    fn check_prefix_rejects_checksum_drift() {
+        let corpus = &MIGRATOR.migrations;
+        let mut drifted = row(1, corpus, true);
+        drifted.checksum[0] ^= 0xFF;
+        let err = check_prefix(&[drifted], corpus).unwrap_err();
+        assert!(err.contains("checksum drift"), "{err}");
+    }
+}

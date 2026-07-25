@@ -1,0 +1,42 @@
+[
+  {
+    "version": 1,
+    "filename": "0001_accounts_devices_key_packages.sql",
+    "sha384": "e40e71132731c4b2955722122215c93b7367de40229982c3088376d954dccd7218a6700b0655b8b057af674a008345a8",
+    "responsible_service": "auth-service",
+    "tx": "tx",
+    "risk": "expand",
+    "recovery": "forward-only; on failure restore from backup (ADR-0006 §2)",
+    "adr": "0003"
+  },
+  {
+    "version": 2,
+    "filename": "0002_auth_challenges_tokens.sql",
+    "sha384": "f1433cc6311705807a3e84cfd635b732375488c56638f560b072d3714c57367508ab51fde5d919fbfbdf97943e1107be",
+    "responsible_service": "auth-service",
+    "tx": "tx",
+    "risk": "expand",
+    "recovery": "forward-only; on failure restore from backup (ADR-0006 §2)",
+    "adr": "0003"
+  },
+  {
+    "version": 3,
+    "filename": "0003_kt_log.sql",
+    "sha384": "824397d69a7f6693005d9332117a4bffc3f4ee04b70a05b940a29fb6ea22b8b6a27917886b5e36368b53c7bc9bc11337",
+    "responsible_service": "auth-service",
+    "tx": "tx",
+    "risk": "expand",
+    "recovery": "forward-only; on failure restore from backup (ADR-0006 §2)",
+    "adr": "0001"
+  },
+  {
+    "version": 4,
+    "filename": "0004_delivery_groups_messages.sql",
+    "sha384": "6f81be2de59c70692e452f4844e26463d972adfab6ee44debd240060178da178b7c7a128717a2d998dc501678c94356c",
+    "responsible_service": "delivery-service",
+    "tx": "tx",
+    "risk": "expand",
+    "recovery": "forward-only; on failure restore from backup (ADR-0006 §2)",
+    "adr": "0005"
+  }
+]

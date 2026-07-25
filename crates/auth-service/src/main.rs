@@ -2,9 +2,11 @@
 //!
 //! Connects to PostgreSQL (DATABASE_URL is required — a service without its
 //! store is useless, and missing infrastructure must fail loudly, PLAN.md
-//! §13), applies the committed migrations, rebuilds the KT log from
-//! `kt_leaves` with the fatal startup root check (ADR-0001 §4(c)), then
-//! serves the router.
+//! §13), rebuilds the KT log from `kt_leaves` with the fatal startup root
+//! check (ADR-0001 §4(c)), then serves the router. The service applies NO
+//! migrations at startup: schema changes are the canonical citadel-migrate
+//! job's exclusive authority (ADR-0006 §1); the Compose gate and deployment
+//! ordering guarantee the schema head before this binary runs.
 
 use auth_service::kt_store;
 use auth_service::server::{self, AppState, KtState};
@@ -28,9 +30,6 @@ async fn main() {
         .connect(&database_url)
         .await
         .expect("connect to PostgreSQL");
-    auth_service::store::migrate(&pool)
-        .await
-        .expect("apply migrations");
 
     // ADR-0001 §3: the log signing seed comes from the service secret
     // store (M1: the CITADEL_KT_LOG_SEED env var, base64 of 32 bytes).

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/citadel-proto",
     "crates/citadel-core",
+    "crates/citadel-migrations",
     "crates/auth-service",
     "crates/delivery-service",
     "crates/directory-service",

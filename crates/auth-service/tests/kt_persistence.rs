@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use auth_service::kt_store::{self, KtStoreError};
 use auth_service::server::{self, AppState, KtState};
-use auth_service::store;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use citadel_proto::credential::IdentityPublicKey;
@@ -28,41 +27,61 @@ fn db_url() -> String {
     )
 }
 
-/// Connect and migrate in a per-test schema. The KT tables are GLOBALLY
-/// sequenced (`kt_leaves.seq` is one BIGSERIAL per database) and the
-/// leaf-index = seq - 1 guard (ADR-0001 §4) is exact only when the test
+/// Connect and migrate in a THROWAWAY per-test database. The KT tables are
+/// GLOBALLY sequenced (`kt_leaves.seq` is one BIGSERIAL per database) and
+/// the leaf-index = seq - 1 guard (ADR-0001 §4) is exact only when the test
 /// owns its sequence: parallel tests sharing one database and one sequence
-/// would burn each other's seq values and trip the drift guard. Isolation
-/// here is a fresh schema per case — the same philosophy as fresh random
-/// UUIDs elsewhere, never TRUNCATE.
-async fn fresh_pool() -> PgPool {
+/// would burn each other's seq values and trip the drift guard.
+///
+/// The canonical runner pins search_path to public (ADR-0006 §1), so the
+/// pre-ADR-0006 per-test SCHEMA isolation no longer applies; a fresh
+/// DATABASE per case is the same philosophy (never TRUNCATE, no shared
+/// mutable state) through the one canonical entry point used by production.
+struct TestDb {
+    name: String,
+    admin: PgPool,
+}
+
+impl TestDb {
+    async fn teardown(self) {
+        // WITH (FORCE) disconnects stragglers (PG13+). A panicked test leaks
+        // its database — acceptable: CI's postgres is ephemeral per job and
+        // names are unique per case.
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)",
+            self.name
+        ))
+        .execute(&self.admin)
+        .await
+        .expect("drop test database");
+    }
+}
+
+async fn fresh_pool() -> (TestDb, PgPool) {
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
-    let schema = format!("t_{}", AccountId::new().as_uuid().simple());
-    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+    let name = format!("citadel_t_{}", AccountId::new().as_uuid().simple());
+    sqlx::query(&format!("CREATE DATABASE \"{name}\""))
         .execute(&admin)
         .await
-        .expect("create per-test schema");
+        .expect("create per-test database");
 
+    let base = db_url()
+        .rsplit_once('/')
+        .map(|(b, _)| b.to_string())
+        .expect("DATABASE_URL must end in a database name");
     let pool = PgPoolOptions::new()
         .max_connections(8)
-        .after_connect(move |conn, _meta| {
-            let schema = schema.clone();
-            Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO \"{schema}\""))
-                    .execute(conn)
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&db_url())
+        .connect(&format!("{base}/{name}"))
         .await
-        .expect("connect to real PostgreSQL (CI provisions it)");
-    store::migrate(&pool).await.expect("apply migrations");
-    pool
+        .expect("connect to per-test database");
+    citadel_migrations::migrate(&pool)
+        .await
+        .expect("apply canonical migrations (ADR-0006)");
+    (TestDb { name, admin }, pool)
 }
 
 fn test_signer() -> TreeHeadSigner {
@@ -128,19 +147,20 @@ type Router2 = axum::Router;
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn leaf_index_is_seq_minus_one() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let kt = kt_state();
     for (n, want_seq) in [(0, 1), (1, 2), (2, 3)] {
         let seq = append(&pool, &kt, &make_leaf(n)).await;
         assert_eq!(seq, want_seq, "leaf index {} maps to seq {}", n, want_seq);
     }
+    db.teardown().await;
 }
 
 /// Startup happy path: the rebuilt log matches the latest persisted STH.
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn startup_rebuilds_and_verifies() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let kt = kt_state();
     for n in 0..3 {
         append(&pool, &kt, &make_leaf(n)).await;
@@ -151,6 +171,7 @@ async fn startup_rebuilds_and_verifies() {
     assert_eq!(rebuilt.size(), 3);
     let sth = kt_store::load_sth(&pool, None).await.unwrap().unwrap();
     assert_eq!(rebuilt.root(), sth.tbs.root_hash.0);
+    db.teardown().await;
 }
 
 /// ADR-0001 Evidence (issue 004 F4): persist leaves + STH, corrupt a
@@ -159,7 +180,7 @@ async fn startup_rebuilds_and_verifies() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn startup_fails_on_tampered_leaf_bytes() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let kt = kt_state();
     for n in 0..3 {
         append(&pool, &kt, &make_leaf(n)).await;
@@ -181,6 +202,7 @@ async fn startup_fails_on_tampered_leaf_bytes() {
         }
         other => panic!("expected RootMismatch, got {other:?}"),
     }
+    db.teardown().await;
 }
 
 /// ADR-0003 Evidence: the proof endpoint returns the InclusionProof and
@@ -190,7 +212,7 @@ async fn startup_fails_on_tampered_leaf_bytes() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn kt_proof_response_pairs_proof_and_head() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let kt = kt_state();
     let leaves: Vec<KtLeaf> = (0..4).map(make_leaf).collect();
     for leaf in &leaves {
@@ -236,13 +258,14 @@ async fn kt_proof_response_pairs_proof_and_head() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(err.code, citadel_proto::error::ErrorCode::InvalidRequest);
+    db.teardown().await;
 }
 
 /// The remaining KT read surface: latest tree head and consistency proofs.
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn kt_tree_head_and_consistency_endpoints() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let kt = kt_state();
     for n in 0..4 {
         append(&pool, &kt, &make_leaf(n)).await;
@@ -274,6 +297,7 @@ async fn kt_tree_head_and_consistency_endpoints() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = get(app, "/v1/kt/consistency?first=3&second=99").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    db.teardown().await;
 }
 
 /// An STH that was never issued answers `not_found`, never a fabricated
@@ -282,7 +306,7 @@ async fn kt_tree_head_and_consistency_endpoints() {
 #[tokio::test]
 #[ignore = "requires real PostgreSQL; CI db-tests job runs it"]
 async fn kt_proof_404_for_unknown_tree_size() {
-    let pool = fresh_pool().await;
+    let (db, pool) = fresh_pool().await;
     let kt = kt_state();
     let app = server::router(AppState {
         pool: pool.clone(),
@@ -292,4 +316,5 @@ async fn kt_proof_404_for_unknown_tree_size() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(err.code, citadel_proto::error::ErrorCode::NotFound);
+    db.teardown().await;
 }

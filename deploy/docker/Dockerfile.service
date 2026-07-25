@@ -12,7 +12,10 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 
 # Build only the requested service to keep image builds focused.
+# BIN defaults to SERVICE; citadel-migrations ships the citadel-migrate
+# binary (package name ≠ binary name).
 ARG SERVICE
+ARG BIN=${SERVICE}
 RUN cargo build --release -p ${SERVICE} --locked
 
 FROM debian:bookworm-slim AS runtime
@@ -22,8 +25,9 @@ RUN apt-get update \
     && useradd --system --create-home --uid 10001 citadel
 
 ARG SERVICE
+ARG BIN=${SERVICE}
 ENV SERVICE_NAME=${SERVICE}
-COPY --from=builder /app/target/release/${SERVICE} /usr/local/bin/service
+COPY --from=builder /app/target/release/${BIN} /usr/local/bin/service
 
 USER citadel
 EXPOSE 8081 8082 8083 8084

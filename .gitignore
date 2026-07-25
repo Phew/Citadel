@@ -31,3 +31,4 @@ apps/desktop/src-tauri/target/
 /coverage/
 *.profraw
 .cargo-deny*
+__pycache__/

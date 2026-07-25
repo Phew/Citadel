@@ -31,7 +31,9 @@ async fn fresh_pool() -> PgPool {
         .connect(&db_url())
         .await
         .expect("connect to real PostgreSQL (CI provisions it)");
-    store::migrate(&pool).await.expect("apply migrations");
+    citadel_migrations::migrate(&pool)
+        .await
+        .expect("apply canonical migrations (ADR-0006)");
     pool
 }
 
