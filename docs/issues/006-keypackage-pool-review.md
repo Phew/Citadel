@@ -96,4 +96,4 @@ surface — I'll review that when it lands, since it *will* touch the facade.)
 correctly and is genuinely exercised against real PostgreSQL in CI (not
 skipped), and no cryptography leaves the facade on this path. Nothing blocks;
 the two notes above are guidance for when the consuming HTTP endpoint is built.
-This satisfies my PLAN-OPUS-4.8 M1 task 3.
+This satisfies my PLAN-CORE M1 task 3.

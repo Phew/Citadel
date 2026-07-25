@@ -124,7 +124,7 @@ plans/                    architecture plan + team process
 |---|---|---|
 | M0 | Scaffolding, CI, compose stack | ✅ done |
 | M1 | Identity, device enrollment, key transparency | ✅ done |
-| M2 | Encrypted DMs + desktop shell | 🔨 next up |
+| M2 | Encrypted DMs + desktop shell | 🔨 in progress |
 | M3 | Channels + deterministic commit ordering | planned |
 | M4 | Houses, signed roles, moderation | planned |
 | M5 | Multi-device sync, encrypted attachments | planned |
@@ -134,15 +134,19 @@ plans/                    architecture plan + team process
 
 **M1 closed 2026-07-20.** Its exit acceptance test runs in CI on every push: 3 accounts × 2 devices registered and enrolled through the live stack, key packages published and consumed exactly-once, and each client verifying its own KT inclusion proof against the signed tree head. Identity, challenge-response auth, hashed bearer tokens with cascade revocation, device enrollment, and the transparency log are all on main with their evidence tests.
 
+**M2 is being built now.** The design is settled and committed: [ADR-0005](docs/decisions/0005-m2-dm-delivery-wire-model.md) pins the DM delivery wire model (server-assigned gap-free sequence numbers, client-declared epochs treated as untrusted hints, REST-only writes with a receive-only WebSocket gateway, and fixed-bucket padding applied before encryption), and [ADR-0006](docs/decisions/0006-shared-database-migrations.md) pins a single canonical migration corpus with a checksummed manifest. On main today: the mock-backed desktop shell and both ADRs. In review: the client MLS engine for the F2/F4 DM path, and the delivery service's message path plus gateway. M2 closes only when its exit criteria run green end to end, which they do not yet: encrypted DMs across 3 clients on the live stack, a no-plaintext scan over the delivery tables, forward-secrecy and post-compromise-recovery tests, and an adversarial test proving a swapped key package is rejected.
+
 Deliberately out of scope for v1: federation, mobile, account recovery, sealed sender. Each returns via ADR when its time comes ([`plans/PLAN.md` §12](plans/PLAN.md)).
 
 ## How this is built
 
-Citadel is developed by a team of AI coding agents (Claude Opus, Kimi K3, Grok) under a single human owner who reviews and merges everything. The process is deliberately adversarial toward its own claims:
+Citadel is developed by a team of AI coding agents under a single human owner who reviews and merges everything. The security core seat is held by GPT-5.6 Sol (Claude Opus 4.8 held it through M1), backend services, CI and the test harness by Kimi K3, and infrastructure, desktop and voice by Grok 4.5. The roster and every model swap are logged in [`plans/AGENTS.md`](plans/AGENTS.md). The process is deliberately adversarial toward its own claims:
 
 - Every design decision is a committed [ADR](docs/decisions/) with named evidence tests; decisions that exist only in chat don't exist.
 - Agents work in isolated worktrees and cross-review each other's security-relevant code; nothing merges on an agent's say-so.
 - CI proves execution, not vibes: database tests run against real PostgreSQL 16 and hard-fail if the database is missing, the canary scanner must find its own control canaries before reporting "clean," and a green check is only trusted after the log shows the job actually ran.
+
+This is not decoration. Every milestone so far, cross-review has caught something a fully green pipeline did not: a runtime-image packaging regression invisible to the database tests, a lock-ordering race between concurrent migration runners, and an invariant check that was enforced on one side of a protocol exchange but not the other. Findings land as blocking review comments and the pull request respins; a passing test suite has never by itself been sufficient to merge.
 
 The full process rules live in [`plans/AGENTS.md`](plans/AGENTS.md) and [`plans/PLAN.md` §13](plans/PLAN.md).
 
