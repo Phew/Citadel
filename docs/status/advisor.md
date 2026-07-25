@@ -1,4 +1,4 @@
-# Advisor status — M2 final lap (updated 2026-07-25)
+# Advisor status — M2 final component (updated 2026-07-25)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
@@ -7,25 +7,58 @@ cross-review surfaced something green CI missed.
 
 ## Resume queue, in order
 
-M2's two build PRs are **merged and green on main**. What remains is one unbuilt component, the
-exit AC, and the checkpoint.
+M2's build PRs and the exit-AC harness are merged and green on main. Four of M2's five exit
+criteria are now standing CI gates. One component and one test remain.
 
-1. **Sol: local encrypted client store.** ADR first, then build. This is the last unbuilt piece
-   of M2 scope (PLAN.md §9 names "local encrypted SQLite store") and it was on nobody's
-   assignment until 2026-07-25. It is not optional: M2's acceptance criterion says "device
-   compromise simulation shows past messages unreadable (delete state, verify FS)," and with
-   `Provider = OpenMlsRustCrypto` all MLS state is in-memory, so there is no persisted state to
-   delete and the forward-secrecy half of the gate cannot be tested honestly. The ADR comes
-   first because `README.md` already commits to "SQLite, encrypted, key in the OS keychain" and
-   nobody ratified that; key handling here touches INV-2. K3 design-reviews, charge accepts.
-2. **K3: the M2 exit AC.** F2 + F4 across 3 clients on the live stack, no-plaintext scan on the
-   delivery tables, `device_compromise_past_messages_unreadable_fs`, `pcs_recover_after_update`,
-   and `adversarial_ds_swapped_keypackage_rejected`. The last two were blocked on the
-   citadel-core work and are now unblocked. The FS test depends on item 1 landing.
-3. **Integration checkpoint**, then charge declares M2. All lanes pass the multi-client harness
+1. **ADR-0007 (local encrypted client store): K3 design-reviews, then charge accepts.** Sol
+   authored it 2026-07-24, PROPOSED, ~48KB. The security reasoning is strong and its evidence
+   design is deliberately harder than what was asked for: the forward-secrecy test hands the
+   attacker the database, every SQLite sidecar file, AND the correct database encryption key,
+   then demands the exact `SecretTreeError::TooDistantInThePast` chain, explicitly refusing
+   parser errors, application-level epoch comparison, or replay rejection as evidence. It pins
+   `max_past_epochs` to zero rather than inheriting the OpenMLS default and fails closed on
+   drift. The PCS evidence uses a test-only secret extractor plus two independent third-party
+   MLS oracles, states that an epoch-number mismatch alone is insufficient, and blocks M2 close
+   rather than substituting a self-referential test. Version pins were advisor-spot-checked
+   against primary sources and are real, not fabricated.
+
+   **The contested part, and where K3's review should press: Alternative 2.** The ADR rejects
+   the stock bundled SQLCipher 4.5.7 because it "is not 4.17.0, which incorporates current
+   upstream SQLite fixes." That is a preference for newer, not a threat statement. No advisory
+   is named, and §1 itself says "a relevant advisory blocks this choice," implying none
+   currently applies. Everything expensive in the ADR hangs off that single line: a
+   repository-local patch of `libsqlite3-sys`, vendored OpenSSL with pinned Configure
+   transcripts, pinned NASM, three-OS byte-comparison of regenerated amalgamations, a CycloneDX
+   SBOM, and OSV scanning. That is plausibly more work than the rest of M2 combined, and
+   maintaining a local patch of a C crypto library's build glue is a standing burden. Either an
+   advisory is named, or the work stages: ship the store on the stock bundle for M2 and track
+   the reproducibility program as its own ADR. Both are defensible; "newer is better" is not,
+   at this price.
+
+2. **charge: an explicit acceptance-criterion decision, separate from accepting the ADR.**
+   ADR-0007 replaces PLAN §9 M2's "past messages unreadable" with a narrower persisted-state
+   boundary: current MLS secret state cannot decrypt old-epoch ciphertext, but deliberately
+   retained decrypted history stays readable to anyone holding the database encryption key.
+   Advisor position: the narrowing is CORRECT. MLS forward secrecy is a property of key
+   material, not of a local plaintext archive, and Signal behaves the same way; making retained
+   history unreadable is a retention feature, which the ADR defers to a separate design. But
+   AGENTS.md reserves acceptance-criterion changes to charge specifically, so this must be a
+   conscious decision rather than something inherited by accepting an ADR. Do not let it ride
+   along silently.
+
+3. **Sol: build the store**, once ADR-0007 is accepted.
+4. **K3: `device_compromise_past_messages_unreadable_fs`**, the fifth and last exit criterion,
+   once the store lands. K3 deliberately did not write it against in-memory state, and was right
+   not to: its note in `crates/test-harness/tests/m2_dm.rs` records that an in-memory FS test
+   "would pass while proving nothing."
+5. **Integration checkpoint**, then charge declares M2. All lanes pass the multi-client harness
    together before anyone starts M3.
-4. ADR-0006 follow-ups A-D remain binding, tracked, not started (A role isolation + bootstrap,
+6. ADR-0006 follow-ups A-D remain binding, tracked, not started (A role isolation + bootstrap,
    B startup min-version, C risk-classification enforcement, D remaining probes).
+
+Outstanding from Sol, both small: the #39 delta re-review against `33fcfe9` (never posted before
+charge merged it), and a review of K3's merged exit-AC work at `295d829`. K3 already ran the
+equivalent review on Sol's #47 against the merged commit and found nothing.
 
 Deliberately NOT started: Grok's real-core desktop wiring. It is genuinely unblocked now that
 citadel-core is on main, and it is M3 scope, so the integration checkpoint holds it. Being
@@ -64,7 +97,15 @@ A better model would not have caught the one-sided INV-4 check; K3 reading the c
   (0006 + Amendment 1 = `search_path = public, pg_temp`).
 - Zero open PRs. Remote is `main` only. Merged 2026-07-25: **#47** `9a74d94` (citadel-core:
   initiator KT checks + staged-commit processing), **#39** `33fcfe9` (delivery-service message
-  path + WS gateway + ADR-0006 migration CORE), **#46** `ce73cb9` (repo cleanup).
+  path + WS gateway + ADR-0006 migration CORE), **#46** `ce73cb9` (repo cleanup), **#48**
+  `1f4e533` (M2 final lap), **#49** `295d829` (M2 exit-AC harness).
+- M2 exit criteria: F2 three-client DM, F4 roundtrip, delivery-table no-plaintext scan, PCS
+  recovery, and the adversarial swapped-KeyPackage test are all GREEN and, verified in the main
+  run log rather than the badge, actually execute on every push to main. The adversarial test
+  drives a live HTTP proxy that rewrites the KeyPackage fetch, asserts the swap byte-for-byte on
+  the real fetch path, checks the live KT log, and includes a control proving the honest package
+  is accepted. The canary scan now injects real DM plaintext through the live F2+F4 path, so
+  INV-1 is checked against the thing it is actually about. Only the forward-secrecy test remains.
 - Both merge runs fully green on main, all seven jobs, log-verified rather than badge-read. The
   canary scan on `33fcfe9` reported `control_db_found: true` / `control_log_found: true`, so
   "clean" means the scanner proved it can find planted canaries first.
