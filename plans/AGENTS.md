@@ -39,14 +39,16 @@ charge (human) is the sole approval authority for: ADR acceptance, milestone sig
 - M0: Grok solo (workspace, docker-compose, CI skeleton, rust-toolchain.toml). Others blocked until CI is green.
 - M1: Sol (citadel-proto contracts, citadel-service-crypto facade, kt-log) + K3 (auth-service, KeyPackage pool with database-backed concurrency test, harness framework, CI hardening, canary scan). K3 design-reviews the KT ADR before charge accepts it.
 - M2: Sol (citadel-core MLS path) + K3 (delivery transport, WS gateway, F2/F4 harness) + Grok (desktop shell on mocked core).
-- M3: Sol (commit ordering, F7 rebase) + K3 (external-sender plumbing) + Grok (churn rig; wire real core into UI).
+- M3: Sol (commit ordering, F7 rebase) + K3 (external-sender plumbing; the churn rig and the F7 race test) + Grok (wire real core into UI).
 - M4: K3 (directory-service) + Sol (signed role_state validation, adversarial tests) + Grok (house/channel UI).
 - M5: K3 (sync, blobstore) + Sol (multi-device) + Grok (attachment and offline UX, perf).
 - M6: Sol solo (franking spec then implementation); K3 report intake against the spec; Grok perf/UX debt.
 - M7: Grok (SFU, encoded transforms) with Sol blocking review of the key path; K3 signaling endpoints.
 - M8: Grok (security-state UX, packaging) with Sol review; K3 rate limiting and metrics.
 
-Integration checkpoint between milestones: all agents' work passes the multi-client harness together before anyone starts the next milestone.
+Integration checkpoint between milestones: all agents' work passes the multi-client harness together before anyone starts the next milestone. This is why an idle lane stays idle: being unblocked is not the same as being in scope.
+
+The M3 churn rig moved from Grok to K3 on 2026-07-25 (charge, advisor recommendation). A 25-client randomized join/leave storm over 500 epochs with convergence hashing, plus a 10-committer race test, is long-horizon debugging against runtime feedback, which is the axis K3 leads and the one Grok's lane is least suited to. Lane assignments follow demonstrated model strengths and get logged here when they move, same as rule 12 logs model swaps.
 
 ## Escalation
 

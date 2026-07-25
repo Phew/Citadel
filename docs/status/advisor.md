@@ -1,4 +1,4 @@
-# Advisor status — M2 build in flight (updated 2026-07-24, repo cleanup)
+# Advisor status — M2 final lap (updated 2026-07-25)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
@@ -7,88 +7,85 @@ cross-review surfaced something green CI missed.
 
 ## Resume queue, in order
 
-Both cross-reviews came back **CHANGES** on 2026-07-24. Three blocking findings, all three
-independently verified by the advisor against source (not taken on the reviewer's word).
-Each agent now fixes its **own** PR, so the two lanes run in parallel and neither blocks the
-other.
+M2's two build PRs are **merged and green on main**. What remains is one unbuilt component, the
+exit AC, and the checkpoint.
 
-1. **K3 fixes PR #39** — one blocking finding from Sol's review, CONFIRMED.
-   `MIGRATOR.run_direct` (sqlx-core 0.8.6 `migrate/migrator.rs`) calls `conn.lock()` at entry
-   but `conn.unlock()` only after every `?` early-return, so a Dirty version, a
-   VersionMismatch, an `ensure_migrations_table` failure, or any failing migration returns
-   with sqlx's acquisition still held. PostgreSQL session advisory locks need **one unlock per
-   acquisition**; our single `pg_advisory_unlock` releases only our own hold. The `tokio::time::timeout`
-   backstop is a second path to the same leak, since cancellation drops the future mid-run.
-   `migrate_with_bounds` uses `pool.acquire()`, and sqlx returns a dropped `PoolConnection` to
-   the pool without a reset, so the leaked lock **persists on a pooled connection** and blocks
-   later migrations that land on a different one.
-   Companion defect the advisor found while verifying, non-blocking but fix it in the same
-   pass: the same drop path leaks `search_path`, `lock_timeout`, and `statement_timeout` onto
-   the pooled connection on the **success** path too, and both timeouts leak *looser* than the
-   defaults, which would mask hangs in unrelated queries.
-   Do NOT reach for `locking = false` — `ci/check_migrations.py` bans it in both the field and
-   builder forms, correctly. Fix on the way out instead (`pg_advisory_unlock_all()` plus a
-   session reset, on success and error alike), and add evidence: force a migration error under
-   the lock, then prove a subsequent `migrate()` on a **different** connection succeeds rather
-   than blocking to `lock_timeout`. Cover the cancellation path too.
-   Sol's other two findings are closed: the `ci/check_migrations.py` fix PASSED re-review, and
-   the "no-comments rule" was REJECTED (AGENTS.md rule 9 encourages comments and supersedes any
-   no-comments rule). Do not re-litigate either.
-2. **Sol fixes PR #38** — two blocking findings from K3's review, both CONFIRMED.
-   - **INV-4 is one-sided.** `add_members` (`crates/citadel-core/src/group.rs`) takes
-     `key_packages: &[KeyPackage]` and passes them straight to `mls.add_members` with no KT
-     verification and no verifier parameter at all. Verification exists only on the join side.
-     That cannot cover the swapped-KeyPackage attack: the Welcome is encrypted to the
-     attacker's HPKE init key, so no honest client ever reaches the join check.
-     **ADR-0005 §5 explicitly places this on the initiator** ("The initiator, verifying every
-     member credential against the KT log before finalizing the group (INV-4), rejects it"),
-     so this is an ADR compliance violation, not a design preference. The engine must take the
-     verifier on the add path and abort creating no state.
-     Advisor addition: the test `join_rejects_non_kt_attested_member` is *documented* as
-     pinning the swapped-KeyPackage shape but actually asserts the opposite direction (B
-     rejecting A's credential). That false coverage claim is how the gap stayed invisible —
-     fix the comment and add a real initiator-side test.
-   - **`receive()` drops staged commits.** It matches only `ApplicationMessage` and returns
-     `NotApplication` for everything else; `merge_staged_commit`/`StagedCommit` appear nowhere
-     in `citadel-core`. The "handling those is M3" comment mis-scopes it: INV-6 *ordering* is
-     M3, but commit *processing* is load-bearing for the M2 exit AC, since both
-     `pcs_recover_after_update` and the forward-secrecy test drive a self-update commit through
-     this path. CI stays green only because the happy path uses `merge_pending_commit`.
-   What passed K3's review and should not be re-opened: padding is exactly ADR-0005 (buckets,
-   `u32-BE len || content || zero-pad`, pad-then-encrypt confirmed in `send()`/`receive()`);
-   proto contracts untouched (no franking field, `seq` server-assigned, `epoch` client-declared);
-   join-side INV-4 is genuine; no key material reaches the wire. Non-blocking notes in K3's
-   comment: zeroization, seed/pubkey consistency, an `.expect()` in library code.
-3. Narrow re-review of each fix delta by the **other** agent (Sol re-reviews #39's fix, K3
-   re-reviews #38's fix). Scope to the delta only.
-4. charge merges #39 and #38.
-5. **M2 EXIT AC** (what actually closes M2): F2 + F4 encrypted DMs end-to-end across 3 clients
-   on the live stack, no-plaintext scan on delivery tables, device-compromise forward secrecy
-   + PCS, `adversarial_ds_swapped_keypackage_rejected`. Owned by Sol (citadel-core e2e) + K3
-   (harness); needs both #38 and #39 merged.
-6. ADR-0006 follow-ups A-D remain binding, tracked, not started (A role isolation + bootstrap,
+1. **Sol: local encrypted client store.** ADR first, then build. This is the last unbuilt piece
+   of M2 scope (PLAN.md §9 names "local encrypted SQLite store") and it was on nobody's
+   assignment until 2026-07-25. It is not optional: M2's acceptance criterion says "device
+   compromise simulation shows past messages unreadable (delete state, verify FS)," and with
+   `Provider = OpenMlsRustCrypto` all MLS state is in-memory, so there is no persisted state to
+   delete and the forward-secrecy half of the gate cannot be tested honestly. The ADR comes
+   first because `README.md` already commits to "SQLite, encrypted, key in the OS keychain" and
+   nobody ratified that; key handling here touches INV-2. K3 design-reviews, charge accepts.
+2. **K3: the M2 exit AC.** F2 + F4 across 3 clients on the live stack, no-plaintext scan on the
+   delivery tables, `device_compromise_past_messages_unreadable_fs`, `pcs_recover_after_update`,
+   and `adversarial_ds_swapped_keypackage_rejected`. The last two were blocked on the
+   citadel-core work and are now unblocked. The FS test depends on item 1 landing.
+3. **Integration checkpoint**, then charge declares M2. All lanes pass the multi-client harness
+   together before anyone starts M3.
+4. ADR-0006 follow-ups A-D remain binding, tracked, not started (A role isolation + bootstrap,
    B startup min-version, C risk-classification enforcement, D remaining probes).
+
+Deliberately NOT started: Grok's real-core desktop wiring. It is genuinely unblocked now that
+citadel-core is on main, and it is M3 scope, so the integration checkpoint holds it. Being
+unblocked is not the same as being in scope.
+
+## Lane assignment rationale (2026-07-25)
+
+Assignments were checked against current published model strengths rather than left on
+ownership alone; both landed where ownership already put them, which is a result, not a
+formality. K3 leads SWE Marathon (42.0, ahead of Sol 39.0, Opus 4.8 40.0, Fable 5 35.0), the
+benchmark measuring sustained multi-step reasoning over extended codebases, and its documented
+profile is iterating against logs, tests, and runtime feedback. That is the exit AC exactly, and
+at $3/$15 per M tokens with cache discounts it is also the cheapest lane for the most
+context-heavy work left. Sol leads the coding-agent indexes and writes tighter code, which suits
+a focused component behind a real security boundary.
+
+Two operational constraints that follow from the models, not from preference:
+
+- **K3 is documented as over-proactive when boundaries are ambiguous** (Moonshot recommends
+  explicit behavioral limits). This is why `PLAN-KIMI-K3.md` makes K3 restate six Scope
+  Discipline Rules verbatim. Every K3 tasking must name its boundary explicitly or K3 drifts
+  into adjacent fixes.
+- **Sol advertises ~1M context but is capped near 272K in the Codex CLI harness.** Now that
+  citadel-core is substantial, keep its handoffs lean rather than loading whole crates.
+
+No roster swap was made. Fable 5 has the strongest published scorecard and PLAN-CORE.md
+authorizes paying premium for this seat, but the Sol/Fable margins sit inside harness noise, a
+mid-milestone swap costs a full context reload, and Sol is on its best work here. The decisive
+argument: nothing this project has lost time to was a capability gap. Every real defect this
+milestone was caught by cross-review and verification discipline, which is a process property.
+A better model would not have caught the one-sided INV-4 check; K3 reading the code did.
 
 ## State
 
-- main 478d943 before this cleanup. M1 closed and declared. M2 in flight, NOT closed.
-  ADRs 0001-0006 all ACCEPTED (0006 + Amendment 1 = `search_path = public, pg_temp`).
-- Open PRs: #39 (READY, awaiting Sol re-review), #38 (READY, awaiting K3 review). Both green,
-  both MERGEABLE / CLEAN. Neither carries a formal GitHub review — the shared account cannot
-  cast approvals, so verdicts are relayed in chat and recorded here.
-- Desktop shell #3 merged (mock-backed); real-core wiring is a post-#38 follow-up for Grok
-  (parked).
-- Roster: **Opus REPLACED by Sol** (GPT-5.6 Sol) as the citadel-core + proto + design-ADR
-  agent (charge, day 5). K3 = server crates + CI + deny/audit + harness. Grok = desktop
-  (parked). This change deletes the stranded `docs/status/opus.md`; Sol authors its own
-  `docs/status/sol.md` on PR #47, which is the correct owner under rule 2.
-- Advisor self-corrections on record: (a) "#38 only blocked by deny.toml" was wrong — CI runs
-  cargo-audit too, needed `.cargo/audit.toml` (#42); (b) my `search_path` ordering
-  `public, pg_catalog, pg_temp` was weaker than Sol's accepted `public, pg_temp`; (c) I called
-  the RUSTSEC-2023-0071 precedent a confabulation — it existed in `.cargo/audit.toml` all
-  along, I had only checked `deny.toml`.
-- charge open calls, still open: **LICENSE file** (public repo, currently all-rights-reserved
-  by default, needs charge to pick), gh-token tightening, Citadel trademark check.
+- main `ce73cb9`. M1 closed and declared. M2 NOT closed. ADRs 0001-0006 all ACCEPTED
+  (0006 + Amendment 1 = `search_path = public, pg_temp`).
+- Zero open PRs. Remote is `main` only. Merged 2026-07-25: **#47** `9a74d94` (citadel-core:
+  initiator KT checks + staged-commit processing), **#39** `33fcfe9` (delivery-service message
+  path + WS gateway + ADR-0006 migration CORE), **#46** `ce73cb9` (repo cleanup).
+- Both merge runs fully green on main, all seven jobs, log-verified rather than badge-read. The
+  canary scan on `33fcfe9` reported `control_db_found: true` / `control_log_found: true`, so
+  "clean" means the scanner proved it can find planted canaries first.
+- **Process debt from this session, stated plainly:** #47 and #39 were merged on charge's
+  instruction WITHOUT the delta re-reviews the advisor had recommended. The advisor verified
+  both fixes line by line against source, but the advisor also wrote the review directives, so
+  the independent second look did not happen. Recommended remedy, still open: have Sol and K3
+  run their delta reviews against the merged commits, with anything found becoming a follow-up
+  PR. Also not independently reproduced: K3's claim that each new migration test was
+  mutation-checked to fail against the pre-fix code.
+- Roster: Sol (GPT-5.6 Sol) core lane, K3 (Kimi K3) services/CI/harness, Grok (Grok 4.5) desktop,
+  parked. The M3 churn rig moved Grok to K3 on 2026-07-25 (see AGENTS.md sequencing).
+- Advisor self-corrections on record: (a) "#38 only blocked by deny.toml" was wrong, CI runs
+  cargo-audit too; (b) my `search_path` ordering `public, pg_catalog, pg_temp` was weaker than
+  Sol's accepted `public, pg_temp`; (c) I called the RUSTSEC-2023-0071 precedent a confabulation
+  when it existed in `.cargo/audit.toml` all along.
+- charge open calls, still open: **LICENSE file** (public repo, all-rights-reserved by default),
+  gh-token tightening, Citadel trademark check.
+- Sol's worktrees are owned by a separate Windows account (`CodexSandboxOffline`, the Codex
+  sandbox user), so the advisor cannot inspect or clean them. Three finished ones remain on
+  disk; only charge or Sol can remove them.
 
 ## Suppression config (both needed — cargo-audit AND cargo-deny run)
 
