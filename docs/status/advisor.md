@@ -80,7 +80,8 @@ other.
   (parked).
 - Roster: **Opus REPLACED by Sol** (GPT-5.6 Sol) as the citadel-core + proto + design-ADR
   agent (charge, day 5). K3 = server crates + CI + deny/audit + harness. Grok = desktop
-  (parked). `docs/status/opus.md` is renamed to `docs/status/sol.md` by this change.
+  (parked). This change deletes the stranded `docs/status/opus.md`; Sol authors its own
+  `docs/status/sol.md` on PR #47, which is the correct owner under rule 2.
 - Advisor self-corrections on record: (a) "#38 only blocked by deny.toml" was wrong — CI runs
   cargo-audit too, needed `.cargo/audit.toml` (#42); (b) my `search_path` ordering
   `public, pg_catalog, pg_temp` was weaker than Sol's accepted `public, pg_temp`; (c) I called
@@ -127,8 +128,8 @@ f9f58a6 k3/spike-deny-bans  its only file, ci/check_crypto_confinement.py, is al
 5d857da grok/status         2026-07-17 M0 handoff; main's docs/status/grok.md is 2026-07-20.
 2b94f98 k3/status           2026-07-19 day-4 handoff; PR #39 carries a 2026-07-24 k3.md.
 43b1f48 opus/status         2026-07-19 day-4 handoff that never merged, leaving main's
-                            opus.md stranded at day 2. Content salvaged into
-                            docs/status/sol.md by this change, so nothing is lost.
+                            opus.md stranded at day 2. The SHA above is the salvage
+                            point if anything from that handoff is ever wanted back.
 ```
 
 **Structural defect this exposed, now fixed:** per-agent status files were being written on
