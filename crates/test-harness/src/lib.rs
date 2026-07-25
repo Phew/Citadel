@@ -8,6 +8,8 @@
 pub mod canary;
 pub mod client;
 pub mod dbscan;
+pub mod dishonest;
+pub mod dm;
 pub mod stack;
 pub mod testkeys;
 
