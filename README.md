@@ -21,7 +21,7 @@ End-to-end encrypted text, DMs, and voice, built on [MLS (RFC 9420)](https://www
 Discord's shape — houses, channels, roles, voice — with Signal's trust model. The server is an **untrusted router and blob store**: it moves ciphertext, stores ciphertext, and is never in a position to read message content, media, or group secrets. If the server is compromised, subpoenaed, or malicious, the blast radius is metadata, not messages.
 
 - One MLS group per channel; encrypted 1:1 and small-group DMs
-- Forward secrecy and post-compromise security for all content
+- Design target: forward secrecy and post-compromise security, with persisted-state evidence still required for M2
 - Multi-device: each device is its own MLS leaf
 - Roles and permissions are **signed data validated by clients**, not server assertions
 - A key transparency log ([RFC 6962](https://www.rfc-editor.org/rfc/rfc6962)-style Merkle tree) makes identity-key substitution detectable
@@ -52,7 +52,7 @@ These aren't aspirations; they're CI-enforced where a machine can check them. Ev
 ```mermaid
 flowchart LR
     subgraph Client [Client — plaintext lives here only]
-        UI[Tauri 2 + React] --> Core[citadel-core<br/>MLS via OpenMLS<br/>encrypted SQLite]
+        UI[Tauri 2 + React] --> Core[citadel-core<br/>MLS via OpenMLS<br/>encrypted SQLite<br/>proposed ADR-0007]
     end
     subgraph Server [Server — ciphertext only]
         Auth[auth-service<br/>accounts · devices · KT]
@@ -74,7 +74,7 @@ flowchart LR
 | Group crypto | [OpenMLS](https://github.com/openmls/openmls) (RFC 9420), `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` |
 | Backend | Rust · axum · tokio · sqlx · PostgreSQL 16 |
 | Desktop | Tauri 2 · React · TypeScript · Tailwind |
-| Client store | SQLite, encrypted, key in the OS keychain |
+| Local encrypted client store | SQLite + SQLCipher, database encryption key in the OS credential store (proposed in ADR-0007) |
 | Key transparency | `kt-log`: RFC 6962 Merkle log, signed tree heads, embedded trust anchor |
 | Attachments | S3-compatible (MinIO in dev), client-side encrypted |
 
@@ -134,7 +134,7 @@ plans/                    architecture plan + team process
 
 **M1 closed 2026-07-20.** Its exit acceptance test runs in CI on every push: 3 accounts × 2 devices registered and enrolled through the live stack, key packages published and consumed exactly-once, and each client verifying its own KT inclusion proof against the signed tree head. Identity, challenge-response auth, hashed bearer tokens with cascade revocation, device enrollment, and the transparency log are all on main with their evidence tests.
 
-**M2 is being built now.** The design is settled and committed: [ADR-0005](docs/decisions/0005-m2-dm-delivery-wire-model.md) pins the DM delivery wire model (server-assigned gap-free sequence numbers, client-declared epochs treated as untrusted hints, REST-only writes with a receive-only WebSocket gateway, and fixed-bucket padding applied before encryption), and [ADR-0006](docs/decisions/0006-shared-database-migrations.md) pins a single canonical migration corpus with a checksummed manifest. On main today: the mock-backed desktop shell and both ADRs. In review: the client MLS engine for the F2/F4 DM path, and the delivery service's message path plus gateway. M2 closes only when its exit criteria run green end to end, which they do not yet: encrypted DMs across 3 clients on the live stack, a no-plaintext scan over the delivery tables, forward-secrecy and post-compromise-recovery tests, and an adversarial test proving a swapped key package is rejected.
+**M2 remains open.** The client MLS engine, delivery message path, WebSocket gateway, mock-backed desktop shell, and live exit harness are on main. That harness covers encrypted DMs across 3 clients, the delivery-table no-plaintext scan, self-update convergence with post-update messaging, and the swapped-KeyPackage attack. It does not yet prove forward secrecy or post-compromise security against captured persisted state because `citadel-core` has no persisted MLS state to compromise. [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) proposes the last unbuilt component: the local encrypted client store and the persisted-state boundary needed for those tests. It is not implemented or accepted yet. After K3's independent design review and charge's acceptance, M2 still requires the local encrypted client store build plus persisted-state forward-secrecy and post-compromise security evidence.
 
 Deliberately out of scope for v1: federation, mobile, account recovery, sealed sender. Each returns via ADR when its time comes ([`plans/PLAN.md` §12](plans/PLAN.md)).
 

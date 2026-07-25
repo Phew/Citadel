@@ -3,7 +3,7 @@
 - **Status:** ACCEPTED (charge, 2026-07-21, as proposed; recorded by Opus). All five open decisions confirmed as proposed. K3's independent design review = approve, with two non-blocking gaps folded as **Amendment 1** below (charge, 2026-07-21; doc-only, the proto contracts are final and unchanged). Build (delivery-service transport, citadel-core MLS path) starts only on merge.
 - **Date:** 2026-07-20
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3.
-- **Invariants touched:** INV-1 (no plaintext server-side; canary extends to delivery tables), INV-2 (keys never leave the client; local store key in OS keychain), INV-3 (server proposes, never decides), INV-4 (clients validate every welcome/commit/credential), INV-6 (deterministic commit ordering — *reserved* here, enforced in M3), INV-8 (franking, not scanning — scoping call below), INV-9 (local DB key + idempotency randomness from the OS CSPRNG), INV-10 (no crypto primitives from scratch — padding + SQLite-at-rest scoping calls below)
+- **Invariants touched:** INV-1 (no plaintext server-side; canary extends to delivery tables), INV-2 (keys never leave the client; database encryption key in the OS credential store), INV-3 (server proposes, never decides), INV-4 (clients validate every welcome/commit/credential), INV-6 (deterministic commit ordering, *reserved* here and enforced in M3), INV-8 (franking, not scanning; scoping call below), INV-9 (database encryption key + idempotency randomness from the OS CSPRNG), INV-10 (no crypto primitives from scratch; padding + SQLite-at-rest scoping calls below)
 - **Related:** plans/PLAN.md §7 F2/F4, §8 (groups/messages, gateway), §9 M2, §10 (adversarial + no-plaintext), §13; docs/decisions/0001 (KT log), 0002 (crypto facade), 0003 (auth params — `validate_token`, KeyPackage pool), 0004 (device enrollment); crates/citadel-proto/src/{envelope.rs,delivery.rs}; AGENTS.md M2 sequencing (Opus citadel-core, K3 delivery transport + WS gateway + F2/F4 harness)
 
 ## Context
@@ -11,7 +11,7 @@
 M1 is closed: identity, KT, auth, enrollment, and the 3×2 exit AC are green on
 main. M2 delivers **encrypted DMs**: `delivery-service` grows a message path +
 WS gateway; `citadel-core` gains OpenMLS group create/join/send/receive, padding,
-and a local encrypted store; the harness runs F2 + F4 end-to-end between 3
+and a local encrypted client store; the harness runs F2 + F4 end-to-end between 3
 clients (PLAN §9 M2).
 
 Nothing in M2's wire model exists yet. This ADR is the design gate: it pins the
@@ -215,10 +215,13 @@ owns all AEAD).
   handles text DMs; large payloads are attachments (M5), which carry their own
   keys in-band. No fifth bucket in v1.
 
-### 4. Local encrypted store (client, citadel-core)
+### 4. Local encrypted client store (citadel-core)
 
 The only place plaintext exists (PLAN §3). SQLite via sqlx, whole-DB encrypted at
-rest with a key in the OS keychain (INV-2), reusing M1's keychain integration.
+rest with a database encryption key in the OS credential store (INV-2). The
+original text incorrectly said M1 had already delivered credential-store
+integration. It had not. ADR-0007 is the proposed completion gate and
+supersedes this section only if charge accepts it.
 
 ```
 conversations(group_id PRIMARY KEY, kind TEXT, title_local TEXT, created_at)
@@ -231,8 +234,9 @@ pending_outbox(local_id PRIMARY KEY, group_id, idempotency_key,
 mls_state   -- OpenMLS storage-trait tables (encrypted at rest with the DB)
 ```
 
-- **At-rest key (INV-2/INV-9/INV-10):** a 32-byte DB key from the OS CSPRNG via
-  the crypto provider, generated on first run, stored in the OS keychain, and
+- **Database encryption key (INV-2/INV-9/INV-10):** a 32-byte database encryption key from
+  the OS CSPRNG via the crypto provider, generated on first run, stored in the
+  OS credential store, and
   used to open the encrypted SQLite. Encryption uses an established SQLite-at-rest
   mechanism (SQLCipher-style), **not** a hand-rolled cipher — INV-10 holds. The
   key never serializes to any network call (INV-2).
@@ -341,12 +345,15 @@ surface); citadel-core MLS/padding/store tests Opus; adversarial suite Opus
   path; the CI canary-scan finds zero hits in `group_messages.payload_bytes`,
   `welcome_deliveries`, and delivery-service logs (extends the M1 canary AC to M2
   tables; INV-1).
-- **`device_compromise_past_messages_unreadable_fs`** — capture a device's MLS
-  state, advance the group, wipe the pre-advance secrets; the captured snapshot
-  cannot decrypt the post-wipe messages (forward secrecy; PLAN §9 M2 AC).
-- **`pcs_recover_after_update`** — after a simulated compromise, a member performs
-  an MLS self-update (commit) rotating its leaf; subsequent messages are secure
-  again (post-compromise security; PLAN §9 M2 AC).
+- **`device_compromise_past_messages_unreadable_fs`:** create an old-epoch
+  ciphertext that the target has not processed and prove a pre-transition
+  control snapshot decrypts it; advance the group and delete obsolete secrets;
+  the current persisted snapshot, even with its database encryption key, cannot decrypt the
+  old ciphertext (forward secrecy; PLAN §9 M2 AC).
+- **`pcs_recover_after_update`:** capture the compromised pre-update state,
+  perform and persist an honest MLS self-update, then prove the old state cannot
+  decrypt a never-processed post-update ciphertext while current peers can
+  (post-compromise security; PLAN §9 M2 AC).
 - **`padding_bucket_roundtrip_and_sizes`** (proptest, citadel-core) — `pad`/`unpad`
   is lossless for any content length ≤ 16380, and every padded length is exactly
   one of `{256, 1024, 4096, 16384}`; oversize rejects.

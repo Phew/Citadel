@@ -52,7 +52,8 @@ The agent must treat these as inviolable. Any task, refactor, or "fix" that brea
 ```
 +--------------------------------------------------------------+
 |                        CLIENTS                               |
-|  citadel-core (Rust): MLS state, crypto, sync, local store     |
+|  citadel-core (Rust): MLS state, crypto, sync,               |
+|                       local encrypted client store           |
 |  citadel-desktop (Tauri + React): UI over citadel-core via FFI   |
 +--------------------------------------------------------------+
         |  HTTPS (REST)            |  WebSocket (fanout)
@@ -83,7 +84,7 @@ Component responsibilities:
 - **delivery-service.** The MLS Delivery Service. Accepts MLS messages, enforces one-commit-per-epoch ordering per group, fans out via WebSocket, stores ciphertext for offline devices. Acts as external sender to propose membership changes triggered by directory events (join approved, ban issued).
 - **directory-service.** Houses, channel lists, invite links, membership rosters, role definitions. All role state it stores is an opaque signed blob produced by clients; the service orders and distributes it but cannot forge it (INV-7).
 - **blobstore.** Attachments encrypted client-side with per-attachment keys distributed inside MLS application messages. Server sees random bytes plus size.
-- **citadel-core.** The only place plaintext exists. Owns OpenMLS state, local SQLite (encrypted at rest via key in OS keychain), message franking, sync cursors, and exposes a typed API to UIs.
+- **citadel-core.** The only place plaintext exists. Owns OpenMLS state, local SQLite (encrypted at rest via a database encryption key in the OS credential store), message franking, sync cursors, and exposes a typed API to UIs.
 
 ---
 
@@ -97,7 +98,7 @@ Component responsibilities:
 | Realtime | WebSocket (axum), JSON-framed envelope with base64 MLS payloads | Move to binary framing later if needed |
 | Client core | Rust crate `citadel-core`, exposed via Tauri commands | Same crate later reused for mobile via UniFFI |
 | Desktop UI | Tauri 2 + React + TypeScript + Tailwind | |
-| Local store | SQLite via sqlx, encrypted DB key in OS keychain | |
+| Local encrypted client store | SQLite via sqlx, database encryption key in OS credential store | |
 | Attachments | S3-compatible API (MinIO in dev) | |
 | Voice (M7) | LiveKit-style SFU or minimal custom SFU; client-side frame encryption via WebRTC encoded transforms, keys exported from the channel MLS group (DAVE pattern) | Study daveprotocol.com first |
 | CI | GitHub Actions: fmt, clippy (deny warnings), test, cargo-audit, cargo-deny | |
@@ -175,7 +176,7 @@ contacts(account_id, handle, identity_pubkey, verified_at?)   -- safety-number s
 2. POST /v1/accounts with handle + identity pubkey; server creates account, appends identity key to KT log, returns signed tree head.
 3. Client builds an MLS credential binding device key to identity key (basic credential in v1, signed by identity key).
 4. Client generates N=100 KeyPackages, POST /v1/devices/{id}/key-packages.
-5. Client stores identity + device keys in OS keychain; verifies its own KT inclusion proof.
+5. Client stores private identity and device keys in the OS credential store; verifies its own KT inclusion proof.
 
 Additional device: existing device signs the new device's credential; new device uploads KeyPackages; every group the account belongs to gets an Add proposal for the new leaf at next activity (lazy enrollment, tracked in outbox).
 
@@ -247,12 +248,13 @@ Each milestone lists tasks and acceptance criteria (AC). A milestone is done whe
 - AC: `cargo test` green in CI; `docker compose up` boots all service stubs with health endpoints.
 
 ### M1: Identity and KT
-- auth-service: accounts, devices, KeyPackage pool; kt-log append-only Merkle log, signed tree heads, inclusion proofs; citadel-core keychain integration.
+- auth-service: accounts, devices, KeyPackage pool; kt-log append-only Merkle log, signed tree heads, inclusion proofs.
+- Current-state correction: citadel-core OS credential-store integration was not delivered in M1. ADR-0007 proposes its M2 design gate.
 - AC: harness registers 3 accounts, 2 devices each; KT inclusion proofs verify; consuming the same KeyPackage twice is impossible under concurrent load (property test).
 
 ### M2: Encrypted DMs
-- delivery-service message path + WS gateway; citadel-core group create/join/send/receive over OpenMLS; local encrypted SQLite store; padding buckets.
-- AC: harness runs F2 + F4 end to end between 3 clients; server DB provably contains no plaintext (test greps ciphertext tables for known plaintext markers); device compromise simulation shows past messages unreadable (delete state, verify FS) and future messages recover after update (PCS test).
+- delivery-service message path + WS gateway; citadel-core group create/join/send/receive over OpenMLS; local encrypted client store; padding buckets.
+- AC: harness runs F2 + F4 end to end between 3 clients; server DB provably contains no plaintext (test greps ciphertext tables for known plaintext markers); device compromise simulation shows past messages unreadable after state deletion (forward secrecy) and future messages recover after update (post-compromise security). ADR-0007 proposes a precise persisted-state boundary for the broad device-compromise wording; it does not replace this AC unless charge accepts it.
 
 ### M3: Channels and commit ordering
 - One-commit-per-epoch enforcement; external-sender proposals; F3 join flow; F7 conflict handling; committer election.
