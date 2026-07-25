@@ -1,9 +1,25 @@
-# Advisor status — M2 final component (updated 2026-07-25)
+# Advisor status — shutdown 2026-07-25 (M2: one component left)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
 Verify every agent report against the repo/CI logs before endorsing — this milestone every
 cross-review surfaced something green CI missed.
+
+## FIRST ACTION next session
+
+**Check whether Sol committed and pushed ADR-0007.** At shutdown it was NOT committed: the
+~48KB document existed only as an untracked file in Sol's worktree at
+`C:/tmp/Citadel-sol-m2-local-store-adr`, with branch `sol/m2-local-store-adr` still sitting at
+`1f4e533` and nothing staged. Sol's sandbox account was blocked from writing the shared Git
+index and asked charge to approve staging, committing, and rebasing; charge approved and the
+relay went out, but the result was never confirmed in the repo. This is the single fragile
+thing in the project right now and it is a straight rule-2 violation ("no work exists only in a
+working tree between sessions"). If it is gone, it is a day of Sol's work, and the design
+reasoning was good enough to be worth reconstructing rather than redoing from scratch.
+
+If it landed: K3 design-reviews ADR-0007, pressing on Alternative 2 (below), then charge makes
+the two decisions in items 1 and 2 of the queue. If it did not land: get Sol to recommit before
+anything else.
 
 ## Resume queue, in order
 
@@ -127,6 +143,35 @@ A better model would not have caught the one-sided INV-4 check; K3 reading the c
 - Sol's worktrees are owned by a separate Windows account (`CodexSandboxOffline`, the Codex
   sandbox user), so the advisor cannot inspect or clean them. Three finished ones remain on
   disk; only charge or Sol can remove them.
+
+## Shutdown snapshot 2026-07-25
+
+- **main `3d9d232`. Zero open PRs. Remote is `main` and nothing else.** Last full CI run on main
+  (`295d829`, run 30141369632) green across all seven jobs, log-verified. The two advisor commits
+  after it are docs-only and skip CI by design.
+- **M1 closed and declared. M2 NOT closed.** Four of five exit criteria are standing CI gates.
+  The fifth, `device_compromise_past_messages_unreadable_fs`, is blocked on the store, which is
+  blocked on ADR-0007, which at shutdown was uncommitted (see FIRST ACTION).
+- **Nothing is in flight.** No agent had work in review at shutdown. The only unlanded work is
+  Sol's uncommitted ADR-0007.
+- **Two decisions are open and both are charge's**, recorded in queue items 1 and 2: whether
+  ADR-0007's SQLCipher overlay is justified without a named advisory, and the explicit
+  acceptance-criterion change that AGENTS.md reserves to charge. Neither has been decided. Do not
+  let the second ride along inside an ADR acceptance.
+- **charge open calls, still open and carried across three sessions now:** LICENSE file (public
+  repo, all-rights-reserved by default), gh-token tightening, Citadel trademark check.
+- **Local machine housekeeping** (advisor cannot do these): the compose stack may still be up
+  (`docker compose -f deploy/docker-compose.yml down -v`, and note `-v` drops volumes). Sol has
+  five worktrees on disk, four of them finished work
+  (`citadel-sol-adr0006-search-path`, `citadel-sol-audit-parity`, `citadel-sol-pr38`,
+  `citadel-sol-pr39-review` detached, plus `C:/tmp/Citadel-sol-m2-core-respin`). They are owned
+  by the `CodexSandboxOffline` Windows account, so only charge or Sol can remove them. The live
+  one to keep until ADR-0007 lands is `C:/tmp/Citadel-sol-m2-local-store-adr`.
+- **Process note for whoever resumes:** this session merged two code PRs without their delta
+  re-reviews, on charge's instruction. K3 later ran its review against the merged commit and
+  found nothing; Sol's equivalent review of `33fcfe9` is still outstanding, along with a review
+  of `295d829`. The pairing discipline is what has caught every real defect this milestone, so
+  it is worth closing that loop rather than letting it lapse into precedent.
 
 ## Suppression config (both needed — cargo-audit AND cargo-deny run)
 
