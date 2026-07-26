@@ -1,7 +1,12 @@
 # ADR-0007: Local encrypted client store
 
-- **Status:** PROPOSED (body, 2026-07-24) + **Amendment 1 PROPOSED** (2026-07-26).
-  Both require charge for ACCEPTED.
+- **Status:** **ACCEPTED** (charge, 2026-07-26), body as amended. Amendment 1
+  **ACCEPTED** in the same decision. K3's independent design review returned CHANGES,
+  its two blocking findings were folded as Amendment 1, and K3's re-review returned
+  **APPROVE** (`docs/issues/009` rev 2, merged `289c570`). Recorded by the advisor on
+  charge's instruction. Build may start.
+  Two non-blocking notes from the re-review are **not** folded here and are tracked in
+  `docs/issues/011-adr-0007-non-blocking-notes.md`; they land with the store build.
 - **Date:** 2026-07-24 (body); 2026-07-26 (Amendment 1)
 - **Deciders:** charge (required for ACCEPTED); independent design review: K3
   **complete — CHANGES**, `docs/issues/009-adr-0007-store-design-review.md`
@@ -798,7 +803,7 @@ error states; production backend conformance runs per supported desktop OS.
   or regression budget is accepted until those outputs exist and charge
   reviews them.
 
-## Amendment 1 (PROPOSED, 2026-07-26): stage the SQLCipher overlay; name the `deny.toml` narrowing
+## Amendment 1 (ACCEPTED, charge, 2026-07-26): stage the SQLCipher overlay; name the `deny.toml` narrowing
 
 K3's independent design review returned **CHANGES** with two blocking findings
 (`docs/issues/009-adr-0007-store-design-review.md`, merged `9ca9317`). Both are
@@ -1104,14 +1109,39 @@ work gets damaged by accident:
    it at `src/windows.rs:246`, so the direct `windows-sys` adapter with
    `CRED_PERSIST_LOCAL_MACHINE` is warranted. Unchanged.
 
-### E. Explicitly not decided by this amendment
+### E. The separate acceptance-criterion decision — DECIDED
 
 §6 narrows PLAN §9 M2's broad "past messages unreadable" wording to a
-persisted-state boundary. K3 flagged this and correctly declined to decide it;
-the advisor endorses the narrowing on the merits. **AGENTS.md reserves
-acceptance-criterion changes to charge, so it must be a separate, consciously
-stated decision and must not be inherited by accepting this ADR or this
-amendment.** The two decisions land as two decisions.
+persisted-state boundary. K3 flagged this and correctly declined to decide it, as
+did the core lane. AGENTS.md reserves acceptance-criterion changes to charge, so
+this was held out of the ADR acceptance deliberately and remained open after both
+reviews.
+
+**DECIDED (charge, 2026-07-26): the narrowing is accepted.** charge instructed the
+advisor to record it ("Accept. Make the decision."). Recorded here as an explicit
+delegation rather than an advisor decision, because the authority is charge's under
+the roster clause and delegating it is charge's to do; the advisor holds no
+standing power to change an acceptance criterion.
+
+The criterion now reads as PLAN §9 M2 states it, amended in the same commit. The
+substance of what was accepted, stated plainly so a later reader is not misled:
+
+- **What forward secrecy means here.** Current persisted MLS secret state cannot
+  decrypt a previously unseen old-epoch ciphertext after obsolete epoch state is
+  deleted. This is proved against an attacker holding the database, every SQLite
+  sidecar file, **and** the correct database encryption key.
+- **What it does not mean.** Deliberately retained decrypted message history stays
+  readable to anyone holding that key. Making retained history unreadable is a
+  *retention* feature (local-history expiry or per-message cryptographic deletion),
+  not forward secrecy, and it requires its own accepted design.
+- **Why this is a correction rather than a weakening.** MLS forward secrecy is a
+  property of key material, not of a local plaintext archive. The original PLAN
+  wording described a property MLS does not provide and no comparable messenger
+  provides. The narrowed criterion is the testable claim, and it is tested against a
+  strictly stronger attacker than the original wording implied.
+
+This is a user-facing property claim, so it is also stated in the README's security
+posture, not only here.
 
 ## Primary sources
 

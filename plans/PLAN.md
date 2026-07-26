@@ -254,7 +254,7 @@ Each milestone lists tasks and acceptance criteria (AC). A milestone is done whe
 
 ### M2: Encrypted DMs
 - delivery-service message path + WS gateway; citadel-core group create/join/send/receive over OpenMLS; local encrypted client store; padding buckets.
-- AC: harness runs F2 + F4 end to end between 3 clients; server DB provably contains no plaintext (test greps ciphertext tables for known plaintext markers); device compromise simulation shows past messages unreadable after state deletion (forward secrecy) and future messages recover after update (post-compromise security). ADR-0007 proposes a precise persisted-state boundary for the broad device-compromise wording; it does not replace this AC unless charge accepts it.
+- AC: harness runs F2 + F4 end to end between 3 clients; server DB provably contains no plaintext (test greps ciphertext tables for known plaintext markers); device compromise simulation shows **forward secrecy on persisted state** and **post-compromise security** per the boundary in ADR-0007 §6 (ACCEPTED, charge, 2026-07-26). That boundary, which supersedes this bullet's original broad "past messages unreadable" wording: current persisted MLS secret state cannot decrypt a previously unseen old-epoch ciphertext after obsolete epoch state is deleted, proved against an attacker holding the database, every SQLite sidecar file, and the correct database encryption key. Deliberately retained decrypted history remains readable to a holder of that key; making it unreadable is a retention feature needing its own accepted design, not forward secrecy.
 
 ### M3: Channels and commit ordering
 - One-commit-per-epoch enforcement; external-sender proposals; F3 join flow; F7 conflict handling; committer election.
