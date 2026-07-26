@@ -35,7 +35,12 @@ possible once persisted state exists.
 
 ## Immediate task, in order
 
-1. **Fold K3's design-review findings into ADR-0007 as Amendment 1.** The ADR is on main and
+1. ~~**Fold K3's design-review findings into ADR-0007 as Amendment 1.**~~ **DONE** — Amendment 1
+   is written and in review on `core/adr-0007-amendment-1`. What it did, and the one thing it
+   found that K3's review did not, are in "Amendment 1, as landed" below. The original brief for
+   this task is retained beneath for provenance.
+
+   The ADR is on main and
    PROPOSED. K3's independent review returned **CHANGES** with two blocking findings, recorded
    in `docs/issues/009-adr-0007-store-design-review.md`. This is the core lane's own ADR, so the
    core lane folds the findings. Amendment 1 is doc-only and decides nothing; charge accepts.
@@ -69,6 +74,57 @@ possible once persisted state exists.
    the build on a PROPOSED ADR.
 3. **Build the local encrypted client store** to the accepted design.
 4. **Hand the persisted-state API to K3** for `device_compromise_past_messages_unreadable_fs`.
+
+## Amendment 1, as landed (2026-07-26)
+
+Branch `core/adr-0007-amendment-1`. Doc-only: it touches
+`docs/decisions/0007-local-encrypted-client-store.md` and this file, nothing else.
+
+**Deliberately NOT included: the `deny.toml` edit.** Amendment 1 *specifies* the
+`wrappers = ["libsqlite3-sys"]` narrowing and records why it is accepted, but does not apply
+it. Rule 3 — the ADR is PROPOSED, and editing the load-bearing suppression config is part of
+building the store, not part of deciding it. The one-line edit lands with the store build,
+after charge accepts.
+
+**Structure used.** Original §1/§3/Alternative 2/Consequences/Evidence prose is left intact
+with inline `Amended by Amendment 1 §X` markers pointing into the new section, matching how
+ADR-0005 and ADR-0006 carry their amendments. The original text is the record of what was
+proposed; the amendment section carries the substance.
+
+**One correction to K3's review**, found while verifying the staged build against the pinned
+crate rather than restating the review. This is the part a future reader most needs:
+
+- Staging removes the `libsqlite3-sys` patch, so §1's compile-flag pins are no longer Citadel's
+  to set. Three of them cannot be honored on the stock bundle. Verified in
+  `libsqlite3-sys` 0.30.1 `build.rs`: FTS5 is compiled in unconditionally (`:129`), extension
+  loading is compiled in (`:130`), and `SQLITE_TEMP_STORE` is 2 rather than 3 (`:144`).
+- That matters beyond flag bookkeeping, because **"the build omits FTS5" is one leg of K3's
+  CVE-applicability argument, and it is false on the staged bundle.** The conclusion still
+  holds on the remaining preconditions (attacker-crafted database file, `DEFENSIVE` off,
+  attacker-influenced SQL reaching an FTS5 table — all foreclosed), but it is a weaker
+  foreclosure than "the feature is not in the binary," and the amendment says so plainly
+  rather than inheriting a false premise into an accepted ADR.
+- Runtime mitigations are pinned in place of the lost compile-time pins: extension loading is
+  inert unless explicitly enabled (`sqlite3.c:135068-135071`, enabled only at `:142378`), so
+  Citadel never calls the enable API, `trusted_schema = OFF` blocks schema-embedded
+  invocation, and the open sequence asserts the flag is off. `TEMP_STORE=2` costs nothing
+  because §3's per-connection `temp_store = MEMORY` pin already delivers the guarantee.
+
+**Everything else K3 asserted was verified against the pinned source and checks out**, not
+taken on report: SQLCipher `4.5.7`/`community` and embedded SQLite `3.45.3`
+(`sqlite3.c:106612`, `:106616`, `sqlite3.h`); `PRAGMA cipher_status` absent while
+`cipher_version`, `cipher_provider`, `cipher_integrity_check` and `cipher_memory_security` are
+all present; and the `deny.toml` ban text. One useful extra: `SQLCIPHER_CRYPTO_OPENSSL` is
+never passed by the build script but is SQLCipher's compiled default when no provider macro is
+set (`:106599-106603`), and the vendored-OpenSSL path makes the CommonCrypto branch unreachable
+on every target including macOS — so §1's provider pin holds *by default rather than by pin*,
+which is why A.6 makes `PRAGMA cipher_provider` a required readback instead of an assumption.
+
+**Deferred out of M2 by §A.2:** the whole reproducibility and provenance program (4.17.0
+overlay, OpenSSL Configure transcripts, pinned NASM, immutable builder matrix, three-OS
+byte-comparison). It gets its own ADR, and the amendment states the honest case for it — 4.7.0+
+buys keyspec obfuscation, freed-memory overwrite, and `cipher_status` — so that it is argued on
+properties rather than on a version number.
 
 ## Inherited debts from the previous holder of this seat
 
