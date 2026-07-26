@@ -929,7 +929,7 @@ rather than left to drift. Verified against `build.rs` in the pinned crate:
 | `SQLITE_TEMP_STORE=3` | `=2` (`:144`) | **Accepted at 2.** `2` already defaults temp storage to memory, and §3's per-connection `temp_store = MEMORY` pin with readback delivers the guarantee on the actor's only connection. No security property is lost. |
 | `SQLITE_EXTRA_INIT` / `SQLITE_EXTRA_SHUTDOWN` | absent | **Pin dropped.** These are mandatory only from SQLCipher 4.7.0; 4.5.7 initializes correctly without them, which is the configuration the stock crate ships and exercises. |
 | remove FTS5 | `-DSQLITE_ENABLE_FTS5` set (`:129`) | **Cannot be honored.** Accepted per A.4. |
-| `SQLITE_OMIT_LOAD_EXTENSION` | `-DSQLITE_ENABLE_LOAD_EXTENSION=1` set (`:130`) | **Cannot be honored.** Mitigated at runtime, below. |
+| `SQLITE_OMIT_LOAD_EXTENSION` | `-DSQLITE_ENABLE_LOAD_EXTENSION=1` set (`:131`) | **Cannot be honored.** Mitigated at runtime, below. |
 
 **Extension loading, since the compile-time pin is gone.** The capability is
 compiled in but inert by default: SQLite refuses the `load_extension()` SQL

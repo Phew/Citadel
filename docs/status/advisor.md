@@ -1,4 +1,4 @@
-# Advisor status - 2026-07-26 (M2: store is the last component)
+# Advisor status - 2026-07-26 (ADR-0007 amended, awaiting K3 re-review + charge)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
@@ -7,48 +7,63 @@ cross-review surfaced something green CI missed.
 
 ## FIRST ACTION next session
 
-**Core lane (now Claude Opus 5): fold K3's ADR-0007 review findings as Amendment 1.** K3's
-independent design review returned **CHANGES** and is merged at `9ca9317`
-(`docs/issues/009-adr-0007-store-design-review.md`). The ADR belongs to the core lane, so the
-core lane folds its own review findings. Amendment 1 is doc-only and decides nothing.
+**K3 re-reviews ADR-0007 Amendment 1** (merged `c85f55e`). This is not a formality: the
+amendment **corrected a false premise inside K3's own F1 argument**, so K3 must confirm its
+staging conclusion survives its corrected premise. Details in queue item 1.
 
-The two prior FIRST ACTIONs are RESOLVED: ADR-0007 was rescued onto main, and K3's review is done.
+All three prior FIRST ACTIONs are RESOLVED: ADR-0007 was rescued onto main, K3's design review
+landed, and Amendment 1 is written and merged (still PROPOSED — merging the text is not
+accepting it).
 
 ## Resume queue, in order
 
-1. **Core lane: ADR-0007 Amendment 1**, per `docs/issues/009`. Both findings and the advisor's
-   addition to F2 are written out in `docs/status/core.md`; that file is the working brief. In
-   short: **F1** stage the SQLCipher overlay out of M2 and ship on the stock bundle (K3 proved
-   the named CVEs against SQLite 3.45.3 all require preconditions ADR-0007's own design
-   forecloses, and cargo-audit over the exact pinned graph was clean, so the overlay fails the
-   ADR's own gate), handling the wrinkle that `PRAGMA cipher_status` is SQLCipher 4.12.0+.
-   **F2** name the `deny.toml` collision the ADR never mentions: `openssl-sys` is banned
-   graph-wide, so the ADR as written cannot build under this project's CI. Take K3's proven
-   `wrappers = ["libsqlite3-sys"]` narrowing, **and record admitting vendored OpenSSL into
-   `citadel-core` as a named accepted consequence**, not a config edit. That process holds
-   plaintext, and the ban's stated intent was that the openssl stack never enters the graph. A
-   future reader must be able to tell a decision from a drift.
+1. **K3: re-review Amendment 1.** Scope it to the delta. The reason it matters:
+   K3's CVE-applicability argument rested on four preconditions, one of which was "the build
+   omits FTS5." **On the staged stock bundle that is false.** `libsqlite3-sys` 0.30.1 compiles
+   `-DSQLITE_ENABLE_FTS5` unconditionally (`build.rs:129`) and
+   `-DSQLITE_ENABLE_LOAD_EXTENSION=1` (`:131`); staging removes the patch, so those flags stop
+   being Citadel's to set. The core lane found this by verifying against the pinned crate rather
+   than restating the review, said so plainly rather than leaning on the surviving legs, and
+   pinned runtime mitigations for the lost compile-time ones (extension loading inert unless
+   explicitly enabled, `trusted_schema = OFF`, and the open sequence asserting the flag is off,
+   with `store_release_uses_only_pinned_sqlcipher` reading the flag table back from the built
+   artifact). K3 should confirm the remaining three preconditions still carry the conclusion,
+   and that the runtime mitigations are adequate substitutes. Advisor position: they are, and
+   the framing matches the compiled-but-unreachable precedent set for the libcrux advisories in
+   `#41`.
+   Advisor verification of the amendment, done: every source citation checked exact against the
+   pinned crate (`cipher_status` absent, the four replacement pragmas present, `HAS_CODEC` +
+   `TEMP_STORE=2` at `:144`, `THREADSAFE=1` at `:136`, the `SQLITE_LoadExtFunc` gate at
+   `sqlite3.c:135068-135071` set only at `:142378`). One off-by-one (`:130` for load-extension)
+   was corrected by the advisor post-merge.
 2. **charge: two decisions, still separate.**
-   (a) Accept or reject ADR-0007 once Amendment 1 lands.
-   (b) The acceptance-criterion change, which must NOT ride along inside (a). ADR-0007 narrows
-   PLAN section 9 M2's "past messages unreadable" to a persisted-state boundary. **Advisor
-   position: the narrowing is correct**, because MLS forward secrecy is a property of key
-   material rather than of a retained plaintext archive, and making retained history unreadable
-   is a retention feature the ADR defers to its own design. K3 flagged this and correctly did
-   not decide it. AGENTS.md reserves acceptance-criterion changes to charge.
-3. **Core lane: build the local encrypted client store** to the accepted design.
-4. **K3: `device_compromise_past_messages_unreadable_fs`**, the fifth and last exit criterion,
-   once the store lands. It is deliberately unwritten today and must stay that way until there is
-   persisted state to capture and wipe.
-5. **Integration checkpoint**, then charge declares M2.
-6. ADR-0006 follow-ups A-D remain binding, tracked, not started.
-
-Inherited by the core lane from the previous occupant, both small: the `#39` delta re-review
-against `33fcfe9`, and a review of K3's merged exit-AC harness at `295d829`. K3 already completed
-the mirror-image review of `#47` and found nothing.
+   (a) Accept or reject ADR-0007 **as amended**, after K3's re-review.
+   (b) The PLAN §9 M2 acceptance-criterion narrowing, which must NOT ride along inside (a).
+   Amendment 1 §E deliberately keeps it out. **Advisor position: the narrowing is correct**,
+   because MLS forward secrecy is a property of key material rather than of a retained plaintext
+   archive. AGENTS.md reserves acceptance-criterion changes to charge.
+3. **Core lane: clear the two inherited reviews** while blocked on acceptance. `#49` first
+   (~1,500 lines: the adversarial test and live KT verifier most need a second reader), then
+   `#39`. The advisor previously called these "small"; that was wrong and is corrected in
+   `docs/status/core.md`. They are real security-adjacent reviews.
+4. **Core lane: build the store** once charge accepts. The `deny.toml`
+   `wrappers = ["libsqlite3-sys"]` narrowing lands with the build, not before — Amendment 1
+   specifies it but correctly does not apply it while the ADR is PROPOSED (rule 3).
+5. **K3: `device_compromise_past_messages_unreadable_fs`**, the fifth and last exit criterion,
+   once the store lands. Deliberately unwritten until there is persisted state to capture.
+6. **Integration checkpoint**, then charge declares M2.
+7. ADR-0006 follow-ups A-D remain binding, tracked, not started.
 
 Deliberately NOT started: Grok's real-core desktop wiring. Unblocked, but M3 scope, held by the
-integration checkpoint. Being unblocked is not the same as being in scope.
+integration checkpoint.
+
+## Advisor error corrected 2026-07-26
+
+I characterised the two inherited reviews as "small" in `docs/status/core.md`, which is on main.
+They are not: `#49` is ~1,500 lines across three files and `#39` is a full service plus
+migrations and DB tests. Left standing, that wording would have pressured a reviewer to skim two
+security-adjacent reviews in the lane that most needs a second reader. The core lane pushed back
+on it and was right. Corrected in place, with the correction stated rather than silently edited.
 
 ## Core seat: Opus 5, and the independence caveat (2026-07-26)
 
