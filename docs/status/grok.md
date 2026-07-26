@@ -1,7 +1,7 @@
 # Grok status handoff
 
 **Agent:** Grok (Grok 4.5)  
-**Updated:** 2026-07-20 (M1 closed; M2 open — shell PR #3 rebased and unparked)  
+**Updated:** 2026-07-26 (PCS oracle SPIKE done; perf baselines next)  
 **Audience:** a fresh Grok instance with **zero** memory of prior sessions. Read this, then `plans/PLAN.md`, `plans/AGENTS.md`, `plans/PLAN-GROK-4.5.md`.
 
 ---
@@ -20,83 +20,63 @@ You are Grok on the Citadel team (E2E encrypted Discord-style chat). Your owned 
 **Branch prefix:** `grok/<task>`  
 **Worktree:** `…/Citadel/citadel-grok` only. Primary checkout (`…/Citadel/Citadel`) belongs to **charge**. Do not edit primary.
 
-**Process hard rules:** AGENTS.md especially (1) own worktree only, (2) commit early, (8) escalate don’t improvise, (10) PR descriptions state milestone / invariants / named tests, (13) **no AI attribution signatures**. Charge alone merges to `main` and accepts ADRs. **CI workflow changes do not self-merge.**
+**Process hard rules:** AGENTS.md especially (1) own worktree only, (2) commit early, (8) escalate don't improvise, (10) PR descriptions state milestone / invariants / named tests, (13) **no AI attribution signatures**. Charge alone merges to `main` and accepts ADRs. **CI workflow changes do not self-merge.**
 
 ---
 
-## Current work — M2 desktop shell (PR #3), unparked
+## Current work — PCS oracle SPIKE (this PR)
 
 | Item | Value |
 |------|--------|
-| Branch | `grok/m2-desktop-shell` |
-| Base | `origin/main` @ `08070d4` (M1 closed; README M2 next) |
-| PR | https://github.com/Phew/Citadel/pull/3 |
-| Scope | `apps/desktop/**` + `docs/status/grok.md` only — **no `crates/`** |
-| Mode | Mock-backed shell; real citadel-core wiring is a **follow-up PR** (waits on Opus Task 2 / DM core) |
-| Merge | Charge merges; shell is mock-only and invariant-surface-free — eligible on its own once green |
+| Branch | `grok/pcs-oracle-spike` |
+| Base | `origin/main` @ `289c570` |
+| Scope | `docs/issues/010-pcs-oracle-feasibility.md` + `docs/status/grok.md` only |
+| Mode | SPIKE evidence, no implementation |
 
-### What the shell is
+### Result (charge ladder)
 
-1. Tauri 2 + React + TypeScript + Tailwind under `apps/desktop/`.
-2. Honest mock defaults: empty inbox, `backend=unavailable`, `session=null`, `encryptionStatus=unavailable`.
-3. Persistent non-dismissible mock banner + footer transport label.
-4. Transport: webview → `tauri-invoke` (Rust mock); browser → `in-process-mock` (TS mock).
-5. Command scaffold: `core_get_status`, `core_list_*`, `core_send_mock_local`, fixtures; `core_send_message` hard-rejects.
-6. Standalone `[workspace]` in `src-tauri` (not root workspace).
-7. Empty/whitespace mock-send rejection tests (Rust + vitest).
+ADR-0007 §6 pins independent PCS oracles. Probe (throwaway crate outside repo, deleted after) answered all four load-bearing questions **YES**:
 
-### Local verify (this session)
+1. `mls-rs-crypto-awslc` 0.25.0 supports suite id 1 (`CURVE25519_AES128`).
+2. `mls-rs` 0.55.2 exposes `commit_detached` → `(CommitOutput, CommitSecrets)`; clone can be denied secrets.
+3. `mls-spec` 2.0.1 exposes per-node `UpdatePathNode.encrypted_path_secret: Vec<HpkeCiphertext>`.
+4. `openmls_sqlite_storage` 0.2.0 persists HPKE private keys + `init_secret` as SQL/JSON blobs — extractor is a query, not an OpenMLS fork.
 
-```text
-pnpm test   → 13 passed
-pnpm build  → ok
-cargo test --locked (src-tauri) → 6 passed
-```
+**Recommended rung: 1** (full differential PCS as specified). Detail and command transcripts in `docs/issues/010-pcs-oracle-feasibility.md`.
 
-### Honesty rules (do not regress)
+This does **not** accept ADR-0007 and does **not** build the store or the oracle job.
 
-- Never green “encrypted” / verified-user chrome on mock data.
-- Never imply backend availability.
-- Never invent real accounts; fixtures stay labeled.
-- No direct REST/WS from React to services.
-- Do not wire real citadel-core in this PR.
+---
 
-### How to run
+## Next (tasked, no deadline) — perf baselines
 
-```bash
-cd apps/desktop
-pnpm install
-pnpm test
-pnpm build
-pnpm dev               # browser → in-process-mock
-pnpm tauri:dev         # webview → tauri-invoke (still mock)
-cd src-tauri && cargo test --locked
-```
+`test-harness/perf` is owned and empty. After this SPIKE PR:
+
+- Build on-demand throughput/latency baselines against the **live compose stack** for paths that exist today: F2 create/Welcome, F4 send/recv RTT + sustained send, gateway subscribe under concurrency, message fetch at ADR-0005 page limit 500.
+- Record environment with every number; commit a baseline file for diffs; fail loud if stack is missing (PLAN §13).
+- **Not in scope:** optimization, touching unowned crates, CI gate on every push.
+
+Desktop shell (`grok/m2-desktop-shell` / PR #3 era) remains mock-backed; real-core wiring is M3 and held by the integration checkpoint (advisor status).
 
 ---
 
 ## Historical
 
+### Desktop shell (M2 mock) — earlier sessions
+
+Mock-backed Tauri 2 + React shell under `apps/desktop/`. Honesty rules: never green "encrypted" on mock data; no direct REST/WS from React; no real citadel-core in that PR.
+
 ### Desktop CI job — MERGED (PR #5)
 
-| Item | Value |
-|------|--------|
-| PR | https://github.com/Phew/Citadel/pull/5 |
-| Merge | `fb13d9b` on main |
-| Final form | path filter + `rustc --version` + pnpm install/test/build + cargo test in `src-tauri` |
-| Execution proof on shell path | run **29704933798** (day 4; desktop job 88240219215) |
-
-### Day 4 (parked era)
-
-Rebased onto main @ `33d775a`, empty-body tests, desktop job execution proof, then parked pending M1 checkpoint. Superseded by this unpark.
+`fb13d9b` on main. Path filter on `apps/desktop/**`.
 
 ---
 
-## Carry-forward for next Grok session
+## Carry-forward
 
-1. Confirm worktree: `git rev-parse --show-toplevel` → must be `citadel-grok`.
-2. After charge merges PR #3: wait for Opus DM core (Task 2) before a **follow-up** PR that swaps mock command bodies to real citadel-core.
-3. Do not touch `crates/` from the desktop shell lane unless charge reassigns.
-4. Desktop CI contract: path filter on `apps/desktop/**` must stay green.
-5. MSRV **1.95.0**; bumps need ADR.
-6. No AI attribution (AGENTS.md rule 13).
+1. Worktree only: `citadel-grok`.
+2. After charge merges this SPIKE: start `grok/perf-baselines` for `test-harness/perf`.
+3. Do not touch `crates/` unless charge reassigns.
+4. MSRV **1.95.0**; bumps need ADR.
+5. No AI attribution (AGENTS.md rule 13).
+6. Real-core desktop wiring is M3, not unparked by the SPIKE.
