@@ -52,7 +52,7 @@ These aren't aspirations; they're CI-enforced where a machine can check them. Ev
 ```mermaid
 flowchart LR
     subgraph Client [Client — plaintext lives here only]
-        UI[Tauri 2 + React] --> Core[citadel-core<br/>MLS via OpenMLS<br/>encrypted SQLite<br/>proposed ADR-0007]
+        UI[Tauri 2 + React] --> Core[citadel-core<br/>MLS via OpenMLS<br/>encrypted SQLite]
     end
     subgraph Server [Server — ciphertext only]
         Auth[auth-service<br/>accounts · devices · KT]
@@ -74,7 +74,7 @@ flowchart LR
 | Group crypto | [OpenMLS](https://github.com/openmls/openmls) (RFC 9420), `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` |
 | Backend | Rust · axum · tokio · sqlx · PostgreSQL 16 |
 | Desktop | Tauri 2 · React · TypeScript · Tailwind |
-| Local encrypted client store | SQLite + SQLCipher, database encryption key in the OS credential store (proposed in ADR-0007) |
+| Local encrypted client store | SQLite + SQLCipher, database encryption key in the OS credential store ([ADR-0007](docs/decisions/0007-local-encrypted-client-store.md), accepted; build in progress) |
 | Key transparency | `kt-log`: RFC 6962 Merkle log, signed tree heads, embedded trust anchor |
 | Attachments | S3-compatible (MinIO in dev), client-side encrypted |
 
@@ -106,6 +106,7 @@ crates/
   citadel-core/           client core — the plaintext boundary
   citadel-service-crypto/ the ONLY crypto surface services may touch (verify · sha256 · CSPRNG)
   kt-log/                 key transparency Merkle log
+  citadel-migrations/     the one canonical database migration corpus (ADR-0006)
   auth-service/           accounts, devices, challenge-response auth, KT endpoints
   delivery-service/       MLS delivery + fanout (M2+)
   directory-service/      houses / channels (M4+)
@@ -134,19 +135,21 @@ plans/                    architecture plan + team process
 
 **M1 closed 2026-07-20.** Its exit acceptance test runs in CI on every push: 3 accounts × 2 devices registered and enrolled through the live stack, key packages published and consumed exactly-once, and each client verifying its own KT inclusion proof against the signed tree head. Identity, challenge-response auth, hashed bearer tokens with cascade revocation, device enrollment, and the transparency log are all on main with their evidence tests.
 
-**M2 remains open.** The client MLS engine, delivery message path, WebSocket gateway, mock-backed desktop shell, and live exit harness are on main. That harness covers encrypted DMs across 3 clients, the delivery-table no-plaintext scan, self-update convergence with post-update messaging, and the swapped-KeyPackage attack. It does not yet prove forward secrecy or post-compromise security against captured persisted state because `citadel-core` has no persisted MLS state to compromise. [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) proposes the last unbuilt component: the local encrypted client store and the persisted-state boundary needed for those tests. It is not implemented or accepted yet. After K3's independent design review and charge's acceptance, M2 still requires the local encrypted client store build plus persisted-state forward-secrecy and post-compromise security evidence.
+**M2 remains open, with one component left.** On main: the client MLS engine, the delivery message path, the WebSocket gateway, the mock-backed desktop shell, and the live exit harness. Four of M2's five exit criteria run as standing CI gates on every push, and the canary scan now drives real DM plaintext through the full send/receive path, so the no-plaintext invariant is checked against actual message content rather than synthetic markers.
+
+The fifth criterion, forward secrecy against a captured device, is deliberately unwritten: `citadel-core` currently holds MLS state in memory, so there is nothing persisted to capture and wipe, and a test written today would pass while proving nothing. [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) is **accepted** (2026-07-26, after an independent design review that returned changes and a re-review that approved the amended version) and specifies the last unbuilt component: the local encrypted client store, plus the exact persisted-state boundary the forward-secrecy and post-compromise tests are written against. M2 closes when that store is built and those two tests pass.
 
 Deliberately out of scope for v1: federation, mobile, account recovery, sealed sender. Each returns via ADR when its time comes ([`plans/PLAN.md` §12](plans/PLAN.md)).
 
 ## How this is built
 
-Citadel is developed by a team of AI coding agents under a single human owner who reviews and merges everything. The security core seat is held by GPT-5.6 Sol (Claude Opus 4.8 held it through M1), backend services, CI and the test harness by Kimi K3, and infrastructure, desktop and voice by Grok 4.5. The roster and every model swap are logged in [`plans/AGENTS.md`](plans/AGENTS.md). The process is deliberately adversarial toward its own claims:
+Citadel is developed by a team of AI coding agents under a single human owner who reviews and merges everything. The security core seat is held by Claude Opus 5 (Claude Opus 4.8 through M1, GPT-5.6 Sol briefly), backend services, CI and the test harness by Kimi K3, and infrastructure, desktop and voice by Grok 4.5. The roster and every model swap are logged in [`plans/AGENTS.md`](plans/AGENTS.md). The process is deliberately adversarial toward its own claims:
 
 - Every design decision is a committed [ADR](docs/decisions/) with named evidence tests; decisions that exist only in chat don't exist.
 - Agents work in isolated worktrees and cross-review each other's security-relevant code; nothing merges on an agent's say-so.
 - CI proves execution, not vibes: database tests run against real PostgreSQL 16 and hard-fail if the database is missing, the canary scanner must find its own control canaries before reporting "clean," and a green check is only trusted after the log shows the job actually ran.
 
-This is not decoration. Every milestone so far, cross-review has caught something a fully green pipeline did not: a runtime-image packaging regression invisible to the database tests, a lock-ordering race between concurrent migration runners, and an invariant check that was enforced on one side of a protocol exchange but not the other. Findings land as blocking review comments and the pull request respins; a passing test suite has never by itself been sufficient to merge.
+This is not decoration. Every milestone so far, cross-review has caught something a fully green pipeline did not: a runtime-image packaging regression invisible to the database tests, a lock-ordering race between concurrent migration runners, an invariant check enforced on one side of a protocol exchange but not the other, and a design review whose own supporting argument turned out to rest on a false premise, caught by the lane it was reviewing. Findings land as blocking review comments and the pull request respins; a passing test suite has never by itself been sufficient to merge.
 
 The full process rules live in [`plans/AGENTS.md`](plans/AGENTS.md) and [`plans/PLAN.md` §13](plans/PLAN.md).
 
