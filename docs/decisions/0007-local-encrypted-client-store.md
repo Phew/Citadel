@@ -1,11 +1,15 @@
 # ADR-0007: Local encrypted client store
 
-- **Status:** PROPOSED
-- **Date:** 2026-07-24
-- **Deciders:** charge (required for ACCEPTED); independent design review: K3 pending
+- **Status:** PROPOSED (body, 2026-07-24) + **Amendment 1 PROPOSED** (2026-07-26).
+  Both require charge for ACCEPTED.
+- **Date:** 2026-07-24 (body); 2026-07-26 (Amendment 1)
+- **Deciders:** charge (required for ACCEPTED); independent design review: K3
+  **complete — CHANGES**, `docs/issues/009-adr-0007-store-design-review.md`
+  (merged `9ca9317`). Its two blocking findings are folded as Amendment 1 below.
 - **Invariants touched:** INV-1, INV-2, INV-4, INV-5, INV-9, INV-10
 - **Related:** plans/PLAN.md §§3, 4, 6, 9 M2, and 13; ADR-0001 §5;
-  ADR-0005 §4; OpenMLS 0.8.1
+  ADR-0005 §4; OpenMLS 0.8.1; `deny.toml` (Amendment 1 §B);
+  docs/issues/009 (the review this amendment answers)
 - **Supersedes on acceptance:** ADR-0005 §4, its M2 forward-secrecy and
   post-compromise security evidence definitions, and the `sqlx` part of
   plans/PLAN.md §4's client-store row; it also replaces PLAN §9 M2's broad
@@ -33,6 +37,14 @@ scope.
 ## Decision
 
 ### 1. Storage and encryption libraries
+
+> **Amended by Amendment 1 §A.** The SQLCipher 4.17.0 source overlay, its
+> reproducibility program, and its pinned compile-flag set are **staged out of
+> M2**. M2 ships the stock bundled SQLCipher 4.5.7. The paragraphs below
+> describing the overlay, the vendored-OpenSSL Configure transcripts, the pinned
+> NASM artifact, and the immutable builder matrix record the original proposal
+> and are **not M2 scope**; read Amendment 1 §A for what M2 actually builds.
+> Amendment 1 §B additionally names this section's collision with `deny.toml`.
 
 `citadel-core` will use:
 
@@ -280,6 +292,12 @@ returns a typed error and preserves evidence for explicit recovery. A crash may
 leave ciphertext and a rollback journal, but never a usable plaintext database.
 
 ### 3. Connection hardening
+
+> **Amended by Amendment 1 §A.6.** `PRAGMA cipher_status` does not exist on the
+> staged bundle (verified absent from the shipped 4.5.7 amalgamation). The open
+> sequence's codec verification is respecified there. Every other setting in this
+> section, including the readback requirement and the abort-on-failure rule,
+> stands unchanged.
 
 One store actor owns one SQLite connection on a dedicated blocking thread. It
 serializes all access without blocking Tauri's UI thread or requiring a Tokio
@@ -566,10 +584,14 @@ database encryption key is equivalent to current client state.
    synchronous OpenMLS surface drives asynchronous `sqlx` internally with
    `block_in_place`, requires a multithreaded Tokio runtime, and adds an
    unnecessary runtime constraint to Tauri and future FFI callers.
-2. **The stock bundled SQLCipher source.** Rejected. The compatible
-   `libsqlite3-sys` release embeds SQLCipher 4.5.7; the current Rust release
-   embeds 4.14.0. Neither is SQLCipher 4.17.0, which incorporates current
-   upstream SQLite fixes.
+2. **The stock bundled SQLCipher source.** ~~Rejected.~~ **Reversed by
+   Amendment 1 §A: this is the M2 choice.** The original rejection reasoning is
+   retained for the record: "The compatible `libsqlite3-sys` release embeds
+   SQLCipher 4.5.7; the current Rust release embeds 4.14.0. Neither is SQLCipher
+   4.17.0, which incorporates current upstream SQLite fixes." K3's review
+   established that this is a freshness preference rather than the named
+   advisory §1's own gate requires, so the rejection did not meet this ADR's
+   stated bar. See Amendment 1 §A.
 3. **Forking the OpenMLS provider onto current `rusqlite`.** Rejected for M2.
    Its `refinery` migration dependency is also tied to the older `rusqlite`
    line, so this requires owning both provider and migration-engine changes.
@@ -603,13 +625,24 @@ database encryption key is equivalent to current client state.
 - Positive: OpenMLS and application state share one transaction and one
   established SQLite implementation.
 - Positive: the desktop graph uses current SQLCipher without forking OpenMLS's
-  secret-state implementation.
+  secret-state implementation. **Amended by Amendment 1 §A:** M2 uses the stock
+  bundled SQLCipher 4.5.7, not the current release. The "without forking" half
+  becomes stronger, not weaker — M2 forks nothing at all.
 - Negative: desktop builds compile bundled SQLCipher and vendored OpenSSL,
   increasing build time and binary size.
+- **Negative (Amendment 1 §B.3): a vendored OpenSSL C codebase enters
+  `citadel-core`, the one process holding plaintext, MLS secrets, and signing
+  seeds.** This requires narrowing `deny.toml`'s graph-wide `openssl-sys` ban to
+  `wrappers = ["libsqlite3-sys"]`. Accepted knowingly; the alternatives
+  (LibTomCrypt, macOS-only CommonCrypto, or a hand-written OpenMLS storage
+  provider) are worse. Reasoning and the conditions that would reopen it are in
+  Amendment 1 §B.3 and §B.4.
 - Build-time dependencies: the pinned platform C toolchain, Perl,
   `openssl-src` and OpenSSL sources, platform Configure target and options,
   GNU Make or `nmake.exe`, and NASM 3.02 on Windows x86-64. SQLCipher and
-  OpenSSL are built from the pinned source graph.
+  OpenSSL are built from the pinned source graph. **Amended by Amendment 1 §A.1:**
+  M2 pins none of these itself; it takes `openssl-src`'s own build contract. The
+  pinned-builder program moves to the separate ADR of §A.2.
 - Runtime dependencies: the native OS credential service. No external
   SQLCipher or OpenSSL installation is required.
 - CI-validation dependencies: an isolated runner user, Windows Credential
@@ -621,9 +654,11 @@ database encryption key is equivalent to current client state.
 - Cargo audit and deny cover the Rust graph. The native manifest, SBOM,
   digest-pinned scanners, upstream security-notice comparison, and committed
   license texts cover the linked C sources.
-- Negative: Citadel owns a narrow `libsqlite3-sys` source overlay. Every
+- ~~Negative: Citadel owns a narrow `libsqlite3-sys` source overlay. Every
   SQLCipher or OpenMLS upgrade must regenerate it, reproduce its provenance,
-  rebuild all three desktop targets, and rerun the store evidence.
+  rebuild all three desktop targets, and rerun the store evidence.~~
+  **Removed by Amendment 1 §A: M2 owns no overlay.** This consequence returns
+  only if the separate reproducibility ADR of §A.2 is later accepted.
 - Negative: Linux desktop use requires a running Secret Service implementation
   and may require an unlock prompt. Headless Linux is unsupported for the
   production local encrypted client store and fails closed.
@@ -645,6 +680,13 @@ database encryption key is equivalent to current client state.
 The build must provide these named tests using real SQLCipher and the real
 OpenMLS provider. Test-only credential-store doubles may inject success and
 error states; production backend conformance runs per supported desktop OS.
+
+> **Amended by Amendment 1 §A.7.** No test below is renamed, removed, or
+> weakened. Three of them change pinned *values* only, because M2 ships
+> SQLCipher 4.5.7 rather than 4.17.0:
+> `store_release_uses_only_pinned_sqlcipher`,
+> `store_and_oracle_dependencies_pass_advisory_and_license_policy`, and
+> `store_epoch_transition_removes_obsolete_secret_bytes`.
 
 - **`store_first_create_is_atomic_and_credential_store_failures_fail_closed`** covers
   every state-table row and injects a process stop after each create, sync,
@@ -755,6 +797,321 @@ error states; production backend conformance runs per supported desktop OS.
   and filesystem, and samples at least 1,000 hot operations. No latency claim
   or regression budget is accepted until those outputs exist and charge
   reviews them.
+
+## Amendment 1 (PROPOSED, 2026-07-26): stage the SQLCipher overlay; name the `deny.toml` narrowing
+
+K3's independent design review returned **CHANGES** with two blocking findings
+(`docs/issues/009-adr-0007-store-design-review.md`, merged `9ca9317`). Both are
+folded here. This amendment is **doc-only and decides no new design**: it removes
+scope, records a config change the body silently required, and corrects premises.
+
+**Not reopened, and this amendment must not be read as weakening any of it.** K3
+verified and approved the store design as written, and §§2 through 6 stand: the
+key handling and OS credential-store contract, the fail-closed startup state
+machine, the transaction and crash contract, the deletion semantics, and the
+forward-secrecy and PCS evidence package. §D below lists the five items K3
+specifically verified, which survive this amendment intact.
+
+### A. F1 — the overlay fails this ADR's own gate; stage it out of M2
+
+**The gate.** §1 states its own rule for the SQLCipher choice: "a relevant
+advisory blocks this choice and requires a provider upgrade." Alternative 2
+rejected the stock bundle not on that rule but on a freshness line — 4.5.7 "is
+not 4.17.0." Everything expensive in the body hangs off that one line: the
+repository-local `libsqlite3-sys` patch, the vendored-OpenSSL Configure
+transcripts, pinned NASM, the immutable three-OS builder matrix, and byte
+comparison of regenerated amalgamations and bindings.
+
+**The evidence, from K3's review.** Named CVEs against the bundle's embedded
+SQLite 3.45.3 do exist (CVE-2025-3277 / CVE-2025-29087, CVE-2025-6965,
+CVE-2025-7709, CVE-2025-29088, CVE-2026-11822/11824). None is applicable in this
+usage: each requires attacker-controlled SQL, an attacker-crafted database file,
+FTS5 tables, `DEFENSIVE` off, or app-side C-API misuse. `cargo-audit` over the
+ADR's exact pinned graph, run under this repo's own config, returned zero
+advisories on any crate this ADR introduces. **So the gate is not triggered, and
+the overlay is not authorized by this ADR's own stated standard.**
+
+**Decision: M2 ships on the stock bundle.**
+
+#### A.1 What M2 builds
+
+`rusqlite` 0.32.1 with `bundled-sqlcipher-vendored-openssl`, resolving
+`libsqlite3-sys` 0.30.1 — **unpatched**. The following are verified directly
+against the shipped amalgamation in that exact crate, not taken on report:
+
+| Property | Value | Where verified |
+|---|---|---|
+| SQLCipher version | `4.5.7`, `community` build | `sqlcipher/sqlite3.c:106612`, `:106616` |
+| Embedded SQLite | `3.45.3` | `sqlcipher/sqlite3.h`, `SQLITE_VERSION` |
+| Crypto provider | OpenSSL, selected by **compiled default** | `sqlcipher/sqlite3.c:106599-106603` |
+
+The third row matters and is not obvious: `libsqlite3-sys`'s build script never
+passes `-DSQLCIPHER_CRYPTO_OPENSSL`. SQLCipher defines it itself whenever no
+other provider macro is set, and on the `bundled-sqlcipher-vendored-openssl`
+path the build script's CommonCrypto branch is unreachable on every target,
+macOS included. §1's OpenSSL-provider pin therefore holds on the stock bundle,
+but it holds *by default rather than by pin*, so it must be **proved by readback**
+(`PRAGMA cipher_provider`) rather than assumed.
+
+**Removed from M2 scope:** the repository-local `libsqlite3-sys` patch and the
+4.17.0 amalgamation; the pinned OpenSSL Configure target/option vectors and
+their transcripts; the pinned NASM 3.02 artifact and `OPENSSL_RUST_USE_NASM`
+requirement; the pinned Perl/C-toolchain/Make/VS-Build-Tools builder images and
+their digests; and byte-comparison of regenerated artifacts. `openssl-src` is
+still in the graph — it is what `vendored` builds — but M2 takes whatever that
+crate's own pinned build contract produces instead of dictating it.
+
+#### A.2 What becomes its own ADR
+
+The reproducibility and provenance program moves out whole, to be justified on
+its own merits if and when charge wants it. **It must be argued on the
+properties it buys, not on a version number.** Stating the honest case for it,
+since staging is not a claim it is worthless: SQLCipher 4.7.0+ adds keyspec
+obfuscation, fast overwrite of freed memory, and `PRAGMA cipher_status`. Those
+are real defense-in-depth. A future ADR that names *them* as the reason is a
+proportionate argument; a freshness line that smuggles in indefinite maintenance
+of a fork of a C crypto library's build glue is not.
+
+#### A.3 What stays in M2: the tripwire
+
+The **lightweight** native manifest and native scan stay, and staging makes them
+more important rather than less, because they are now the only mechanism that
+would detect an advisory that genuinely does become relevant to this usage. They
+cost a CI job, not a fork. The staged manifest records, for the *stock* bundle:
+the SQLCipher version and build string as read back from the shipped library,
+the embedded SQLite version, the vendored OpenSSL version as resolved by
+`openssl-src`, and the exact license texts for SQLCipher, SQLite, and OpenSSL.
+The reproducible job generates a CycloneDX SBOM, runs OSV-Scanner and CVE Binary
+Tool from immutable container digests, and compares components against upstream
+SQLCipher, SQLite, and OpenSSL security notices. **Scanner silence alone is not
+acceptance, and an applicable unresolved advisory blocks the release** — both
+rules carry over from §1 unchanged.
+
+#### A.4 The applicability finding, recorded — with one leg of it corrected
+
+The analysis above is recorded here so that a future reader inherits the
+reasoning rather than having to re-derive it. **One correction, found while
+verifying the staged build and not present in K3's review:** K3's applicability
+argument for the two FTS5 CVEs cites "the build omits FTS5," which was true of
+the overlay and is **false of the stock bundle**. `libsqlite3-sys` 0.30.1
+compiles `-DSQLITE_ENABLE_FTS5` unconditionally (`build.rs:129`), and staging
+removes the patch that turned it off.
+
+The conclusion still holds, but it now rests on fewer legs and the record must
+say so honestly:
+
+- **CVE-2025-7709** additionally requires an attacker-crafted database file.
+  SQLCipher page HMAC under the database encryption key forecloses that, and the
+  store never opens a foreign database (§2 rejects a plaintext SQLite header
+  outright).
+- **CVE-2026-11822** additionally requires `DBCONFIG_DEFENSIVE` off. §3 pins it
+  ON with readback and aborts the open if it cannot be verified.
+- **Both** additionally require reaching an FTS5 table through attacker-influenced
+  SQL. Citadel constructs all of its SQL in application code, attacker data
+  arrives only as bound parameters, and the schema contains no FTS5 table — the
+  feature is compiled in but never instantiated.
+
+That is still a sound foreclosure. It is a materially weaker one than "the
+feature is not in the binary," and pretending otherwise is exactly the kind of
+prose-outrunning-code this lane has been caught on before.
+
+#### A.5 The compile-flag pins §1 can no longer make
+
+Staging removes the patch, so Citadel no longer controls `libsqlite3-sys`'s
+build script and cannot set §1's flag vector. Each pin is resolved explicitly
+rather than left to drift. Verified against `build.rs` in the pinned crate:
+
+| §1 pin | Stock bundle | Resolution |
+|---|---|---|
+| `SQLITE_HAS_CODEC` | set (`:144`) | **Holds.** |
+| `SQLITE_THREADSAFE=1` | set (`:136`) | **Holds.** |
+| `SQLCIPHER_CRYPTO_OPENSSL` | not passed; compiled default | **Holds by default.** Prove by `PRAGMA cipher_provider` readback (A.1). |
+| `SQLITE_TEMP_STORE=3` | `=2` (`:144`) | **Accepted at 2.** `2` already defaults temp storage to memory, and §3's per-connection `temp_store = MEMORY` pin with readback delivers the guarantee on the actor's only connection. No security property is lost. |
+| `SQLITE_EXTRA_INIT` / `SQLITE_EXTRA_SHUTDOWN` | absent | **Pin dropped.** These are mandatory only from SQLCipher 4.7.0; 4.5.7 initializes correctly without them, which is the configuration the stock crate ships and exercises. |
+| remove FTS5 | `-DSQLITE_ENABLE_FTS5` set (`:129`) | **Cannot be honored.** Accepted per A.4. |
+| `SQLITE_OMIT_LOAD_EXTENSION` | `-DSQLITE_ENABLE_LOAD_EXTENSION=1` set (`:130`) | **Cannot be honored.** Mitigated at runtime, below. |
+
+**Extension loading, since the compile-time pin is gone.** The capability is
+compiled in but inert by default: SQLite refuses the `load_extension()` SQL
+function unless the `SQLITE_LoadExtFunc` connection flag is set
+(`sqlite3.c:135068-135071`), and that flag is set only by an explicit
+`sqlite3_enable_load_extension` call (`:142378`). Citadel therefore pins three
+things instead: it **never** calls `rusqlite`'s `load_extension_enable` or the
+underlying C API on any connection; §3's existing `trusted_schema = OFF` pin
+blocks a schema-embedded invocation; and the open sequence asserts the flag is
+off. A build in which extension loading can be enabled fails closed.
+
+**Standing rule for the staged flag set:** the pins above are what M2 asserts,
+and `store_release_uses_only_pinned_sqlcipher` reads them back from the built
+artifact. A flag the shipped bundle does not honor is a **build failure and an
+escalation**, never a silently skipped check.
+
+#### A.6 §3's open sequence on 4.5.7
+
+`PRAGMA cipher_status` is SQLCipher 4.12.0+ and is **absent from the shipped
+4.5.7 amalgamation** (verified: zero occurrences in `sqlcipher/sqlite3.c`, where
+`cipher_version`, `cipher_provider`, `cipher_integrity_check`, and
+`cipher_memory_security` are all present). §3's "active encryption codec through
+`PRAGMA cipher_status`" is replaced, for the staged build, by this sequence —
+which is not weaker, only differently sourced:
+
+1. `PRAGMA cipher_version` returns exactly the pinned bundle version (`4.5.7`).
+2. `PRAGMA cipher_provider` returns the expected OpenSSL provider — this is what
+   now carries A.1's "codec is active and is the provider we think it is."
+3. **Successful encrypted schema access plus the schema sentinel**, already
+   mandatory in §3. This is the load-bearing codec proof and is
+   version-independent: a connection whose codec is not active, or is keyed
+   wrongly, cannot read the schema at all.
+4. `cipher_integrity_check` at first creation and at the other points §3 already
+   names. Available since SQLCipher 4.2.0, so unaffected by staging.
+
+§3's rule that failure to enable **or verify** any required setting aborts
+opening the store applies to every step above. If a pragma this sequence depends
+on turns out to be unavailable on the shipped bundle, that is a build failure
+and an escalation under AGENTS.md rule 8 — not a skipped step.
+
+#### A.7 Evidence
+
+**No evidence test is renamed, removed, or weakened.** Only pinned values move:
+
+- `store_release_uses_only_pinned_sqlcipher` reads back `PRAGMA cipher_version`
+  = **4.5.7** and `PRAGMA cipher_provider` = OpenSSL, asserts the A.5 flag table
+  including extension loading being disabled, and still proves a single
+  `rusqlite` / `libsqlite3-sys` graph with no system-library input.
+- `store_and_oracle_dependencies_pass_advisory_and_license_policy` covers
+  SQLCipher **4.5.7** and embedded SQLite **3.45.3** in place of 4.17.0, against
+  the lightweight manifest and SBOM of A.3.
+- `store_epoch_transition_removes_obsolete_secret_bytes` builds its
+  `SQLITE_ENABLE_DBPAGE_VTAB` + `dbdata.c` recovery harness against the **shipped
+  4.5.7** source. The technique is version-portable; the build recipe follows
+  whichever bundle ships. Its pre-transition positive control is unchanged and
+  still invalidates the test if it misses a value.
+
+### B. F2 — the `deny.toml` collision, and admitting vendored OpenSSL as a named consequence
+
+#### B.1 The collision the body never named
+
+`bundled-sqlcipher-vendored-openssl` resolves as
+`["bundled-sqlcipher", "openssl-sys/vendored"]`, putting
+`libsqlite3-sys 0.30.1 → openssl-sys 0.9.117` in the graph. `deny.toml` bans
+`openssl-sys` **graph-wide**. K3 reproduced the failure against this repo's real
+config with cargo-deny 0.20.2:
+
+```
+error[banned]: crate 'openssl-sys = 0.9.117' is explicitly banned
+```
+
+**As written, this ADR could not build under this project's own CI, and never
+said so.** That is the finding. It is independent of F1: dropping
+`vendored-openssl` removes `openssl-sys` but then requires a system OpenSSL to
+link against, which does not exist on the Windows target of this ADR's own
+release matrix. Vendored OpenSSL is required either way.
+
+#### B.2 The fix
+
+K3's proven one-line narrowing, applied to `deny.toml`'s `[bans] deny` list:
+
+```toml
+{ name = "openssl-sys", wrappers = ["libsqlite3-sys"], reason = "SQLCipher page codec links vendored OpenSSL via libsqlite3-sys; not a TLS stack" }
+```
+
+`openssl-sys` remains banned everywhere else in the graph; it is permitted only
+when pulled in by `libsqlite3-sys`. `native-tls` stays banned unconditionally.
+`.cargo/audit.toml` needs no change, and the license allowlist already covers the
+new surface. Both suppression files are load-bearing and cargo-audit runs first,
+so this is recorded as a change to `deny.toml` **only**.
+
+#### B.3 The accepted consequence — recorded as a decision, not a config edit
+
+This is where the amendment does more than restate the review, and deliberately
+so. **The narrowing is not merely a lint tweak, and must not land as one.**
+
+The ban's stated intent, in `deny.toml`'s own comment, is that "TLS is
+rustls-only; the native-TLS/openssl stack must never enter the graph." The
+narrowing preserves the TLS half of that intent exactly: no TLS stack enters, and
+the OpenSSL build serves SQLCipher's page codec and nothing else. But it does
+admit **a vendored OpenSSL C codebase into `citadel-core`** — the one process in
+this system that holds plaintext, MLS secrets, and signing seeds. That is a real
+increase in unsafe-language attack surface in the highest-value process, and this
+ADR accepts it knowingly.
+
+**Accepted, for these reasons:**
+
+- The alternatives are worse. SQLCipher's non-OpenSSL crypto backends are
+  LibTomCrypt (a less-scrutinized C codebase — a downgrade, not an escape) and
+  CommonCrypto (macOS only, so it cannot serve the release matrix). Avoiding
+  SQLCipher entirely means hand-writing an OpenMLS storage provider, which
+  Alternative 4 already rejected for sound reasons: the upstream provider
+  implements a large versioned storage trait, and a local duplicate would create
+  avoidable secret-deletion and upgrade risk in exactly the code that deletes
+  MLS secrets.
+- OpenSSL is not new attack surface of an exotic kind. It is the most-reviewed
+  implementation of the primitives SQLCipher needs, it is reachable only through
+  SQLCipher's page codec on local files this process already owns, and it parses
+  no network input in this role. INV-10 is untouched: no Citadel-authored crypto
+  primitive is introduced, and MLS group cryptography remains entirely OpenMLS's.
+- The build is vendored and pinned, so the version is ours to advance, and A.3's
+  native manifest plus OSV scan is precisely the tripwire for an OpenSSL advisory
+  that does apply.
+
+**Why this is written out at length.** In six months someone will read a ban
+comment saying the openssl stack must never enter the graph, run `cargo tree`,
+see OpenSSL in the graph, and have to determine whether they are looking at a
+decision or at a drift. This section exists so that question has an answer in the
+repository. The `reason` string in `deny.toml` should point here.
+
+#### B.4 What would reopen this
+
+The narrowing is scoped to `libsqlite3-sys`. Any of the following is a new
+decision, not covered by this acceptance: a second wrapper added to the
+`wrappers` list; `openssl-sys` arriving through any path other than SQLCipher's
+page codec; `native-tls` entering the graph at all; or a service crate (as
+opposed to `citadel-core`) acquiring an OpenSSL dependency, which would also be
+an AGENTS.md rule 6 crypto-confinement question.
+
+### C. Non-blocking corrections from the review
+
+- **`max_past_epochs` phrasing (§6).** §6 says the pin is set "instead of
+  inheriting the OpenMLS default," which implies the current default is non-zero.
+  In openmls 0.8.1 the default is **already 0**. The explicit pin is correct and
+  **stays** — its value is fail-closed protection against an upstream default
+  change, which §6's next sentence already states. Read the sentence as "instead
+  of relying on the OpenMLS default."
+- **`dbdata.c` recovery build recipe.** Folded into A.7.
+
+### D. Verified by K3's review; unchanged by this amendment
+
+Recorded explicitly because a scope-reducing amendment is exactly where approved
+work gets damaged by accident:
+
+1. The forward-secrecy test's exact error chain —
+   `ProcessMessageError::ValidationError` → `ValidationError::UnableToDecrypt` →
+   `MessageDecryptionError::SecretTreeError(SecretTreeError::TooDistantInThePast)`
+   — reproduced against openmls 0.8.1 source. Including the subtle part: the
+   `PublicMessage` path diverges to `ValidationError::NoPastEpochData`, which
+   confirms §6 is right to demand an old-epoch **application** ciphertext.
+   Unchanged.
+2. The `max_past_epochs = 0` pin with fail-closed behavior on OpenMLS default
+   drift. Unchanged (see §C for the phrasing note only).
+3. The PCS design's refusal to substitute a self-referential test, **including
+   that it blocks M2 close rather than degrading the evidence**. Unchanged.
+4. The shared-transaction type argument (`Transaction: Deref<Target = Connection>`
+   satisfying `ConnectionRef: Borrow<Connection>`), and that it is a type-level
+   argument requiring
+   `store_provider_and_application_share_one_transaction` as build evidence.
+   Unchanged.
+5. The keyring `CRED_PERSIST_ENTERPRISE` justification — keyring 3.6.3 hard-codes
+   it at `src/windows.rs:246`, so the direct `windows-sys` adapter with
+   `CRED_PERSIST_LOCAL_MACHINE` is warranted. Unchanged.
+
+### E. Explicitly not decided by this amendment
+
+§6 narrows PLAN §9 M2's broad "past messages unreadable" wording to a
+persisted-state boundary. K3 flagged this and correctly declined to decide it;
+the advisor endorses the narrowing on the merits. **AGENTS.md reserves
+acceptance-criterion changes to charge, so it must be a separate, consciously
+stated decision and must not be inherited by accepting this ADR or this
+amendment.** The two decisions land as two decisions.
 
 ## Primary sources
 
