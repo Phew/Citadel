@@ -18,6 +18,11 @@ path = "src/bin/wait_healthy.rs"
 name = "canary-scan"
 path = "src/bin/canary_scan.rs"
 
+# On-demand perf baselines (not default CI). PLAN.md §13: fails loud without stack.
+[[bin]]
+name = "perf-baseline"
+path = "perf/main.rs"
+
 [dependencies]
 citadel-proto = { workspace = true }
 # The harness stands in for real clients in the M2 DM evidence tests: it
