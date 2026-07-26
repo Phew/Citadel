@@ -153,3 +153,5 @@ The full process rules live in [`plans/AGENTS.md`](plans/AGENTS.md) and [`plans/
 ## Security
 
 This project is experimental and has **not** been audited. If you find a security issue, please open an issue on this repository. A proper disclosure policy will land alongside the first releasable build.
+
+**What forward secrecy means here, stated precisely** ([ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) §6). Current persisted MLS secret state cannot decrypt a previously unseen old-epoch message once obsolete epoch state is deleted, and that is proved against an attacker holding your database file, every SQLite sidecar file, **and** the correct database encryption key. It does **not** mean that message history your client deliberately kept becomes unreadable: anyone with that key can read those stored messages. Making retained history unreadable is message expiry, which is a separate feature this project has not designed yet. We state this explicitly because "forward secrecy" is often read as the stronger claim, and the stronger claim would not be true.
