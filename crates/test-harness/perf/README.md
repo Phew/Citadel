@@ -35,8 +35,8 @@ manual / scheduled tool so it cannot become a flaky gate or a CI time sink.
 
 `baseline.json` is schema `citadel-perf-baseline-v1`, produced by a successful
 `just perf-baseline` against a live stack. It is **not** checked in as zeros —
-PLAN §13 forbids a green empty report. First successful run writes the file;
-later runs `--diff` against it.
+PLAN §13 forbids a green empty report. A real run is committed with environment
+metadata; later runs `--diff` against it.
 
 Every report embeds the environment (hostname, OS, arch, CPU count, rustc, git
 SHA, timestamp, stack note). A baseline without its environment is noise; do

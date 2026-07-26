@@ -13,7 +13,7 @@
 //! writes zeros or a green empty report.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
@@ -433,12 +433,12 @@ async fn run_subscribe(runs: usize, n_subs: usize) -> Result<SubscribeBaseline> 
             .send_text(&mut est.groups[0], est.group_id, plain.as_bytes())
             .await?;
         // Every non-sender must see it.
-        for i in 1..clients.len() {
+        for (i, client) in clients.iter().enumerate().skip(1) {
             let _ = dm::recv_foreign_message_for(
                 &mut est.sockets[i],
                 est.group_id,
                 EnvelopeKind::Application,
-                clients[i].device_id,
+                client.device_id,
             )
             .await?;
         }

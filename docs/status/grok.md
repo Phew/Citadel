@@ -1,7 +1,7 @@
 # Grok status handoff
 
 **Agent:** Grok (Grok 4.5)  
-**Updated:** 2026-07-26 (PR #65: fmt + unit tests + real baseline run)  
+**Updated:** 2026-07-26 (PR #65: fmt green, unit tests, real baseline.json)  
 **Audience:** a fresh Grok instance with **zero** memory of prior sessions. Read this, then `plans/PLAN.md`, `plans/AGENTS.md`, `plans/PLAN-GROK-4.5.md`.
 
 ---
@@ -34,18 +34,20 @@ You are Grok on the Citadel team (E2E encrypted Discord-style chat). Your owned 
 | Scope | `crates/test-harness/perf/**`, `justfile`, bin entry, this status file |
 | Mode | Measuring only — no optimization, no unowned crate edits |
 
-### Completion criteria (advisor, not relitigated)
+### Completion criteria (advisor) — met this session
 
-1. `cargo fmt --check` green on the harness  
-2. One real run: `just dev` then `just perf-baseline`  
-3. Resulting `crates/test-harness/perf/baseline.json` committed with environment intact  
+1. `cargo fmt --all -- --check` → exit 0  
+2. `cargo clippy -p test-harness --all-targets -- -D warnings` → exit 0  
+3. `cargo test -p test-harness --bin perf-baseline` → 7 passed  
+4. Real run: compose healthy, then `perf-baseline --write …/baseline.json` → numbers committed  
+5. `baseline.json` includes environment (host, OS, arch, CPUs, rustc, git SHA)
 
 ### What the harness is
 
 - Binary `perf-baseline`: F2 create/Welcome, F4 RTT + sustained send, concurrent gateway subscribe, fetch at `MESSAGES_PAGE_LIMIT` (500).
 - On-demand only (`just perf-baseline`); not default CI.
 - PLAN §13: missing stack fails loud (no zeros).
-- Unit tests cover pure helpers (`percentiles`, report JSON schema round-trip) so default `cargo test` is not vacuous; live stack numbers are the integration proof.
+- Unit tests cover pure helpers (`percentiles`, report JSON schema round-trip); live stack numbers are the integration proof in `baseline.json`.
 
 ### Prior
 
