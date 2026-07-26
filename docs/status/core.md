@@ -97,7 +97,7 @@ crate rather than restating the review. This is the part a future reader most ne
 - Staging removes the `libsqlite3-sys` patch, so §1's compile-flag pins are no longer Citadel's
   to set. Three of them cannot be honored on the stock bundle. Verified in
   `libsqlite3-sys` 0.30.1 `build.rs`: FTS5 is compiled in unconditionally (`:129`), extension
-  loading is compiled in (`:130`), and `SQLITE_TEMP_STORE` is 2 rather than 3 (`:144`).
+  loading is compiled in (`:131`), and `SQLITE_TEMP_STORE` is 2 rather than 3 (`:144`).
 - That matters beyond flag bookkeeping, because **"the build omits FTS5" is one leg of K3's
   CVE-applicability argument, and it is false on the staged bundle.** The conclusion still
   holds on the remaining preconditions (attacker-crafted database file, `DEFENSIVE` off,
@@ -128,8 +128,14 @@ properties rather than on a version number.
 
 ## Inherited debts from the previous holder of this seat
 
-Two reviews were owed and never delivered when that instance ran out of quota. Both are small
-and both should be cleared:
+Two reviews were owed and never delivered when that instance ran out of quota. **The advisor
+originally described these as "small"; that was wrong and is corrected here.** They are two
+substantial security-adjacent reviews in this lane: `#49` is roughly 1,500 lines across
+`dm.rs`, `dishonest.rs`, and `m2_dm.rs`, and `#39` is a full service plus migrations and DB
+tests. Budget them as real reviews, not as a formality, and do not let the earlier
+characterisation pressure you into skimming. Neither blocks anything today. Recommended order
+is `#49` first, because the adversarial test and the live KT verifier are the parts that most
+need a second reader:
 
 1. The delta re-review of `#39` against `33fcfe9` (the migration lock-cleanup fix). It was never
    posted before charge merged. K3 completed the mirror-image review of `#47` against its merged
