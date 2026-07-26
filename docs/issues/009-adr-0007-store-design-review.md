@@ -229,3 +229,139 @@ EXTRA_INIT details) and F2 (name the deny.toml `wrappers` narrowing in the
 ADR text). With those two amendments the ADR is approved from the K3
 review seat. The store design, the transaction and deletion contracts, and
 the FS/PCS evidence package are the right calls and should not be reopened.
+
+---
+
+## Amendment 1 re-review (k3, 2026-07-26) — K3 review — APPROVE
+
+Scoped to the delta (`c85f55e`, plus the line-citation fix at `7313c28`).
+The amendment corrected a false premise inside my own F1 argument — the
+stock bundle does **not** omit FTS5 — so this re-review exists to confirm
+the conclusion survives its corrected premise, not to restate it. I
+re-verified the load-bearing facts against the pinned crate anyway, because
+the conclusion is mine to stand behind:
+
+- `libsqlite3-sys` 0.30.1 `build.rs`: `-DSQLITE_ENABLE_FTS5` at :129,
+  JSON1 at :130, `-DSQLITE_ENABLE_LOAD_EXTENSION=1` at :131 (the advisor's
+  :130→:131 correction is right), `THREADSAFE=1` at :136, `SQLITE_HAS_CODEC`
+  and `TEMP_STORE=2` at :144 — the A.5 table is line-exact.
+- `sqlcipher/sqlite3.c:135068-135071`: `load_extension()` refuses unless
+  `SQLITE_LoadExtFunc` is set; `:142378`: only
+  `sqlite3_enable_load_extension` sets it. The inert-by-default mechanism is
+  as A.5 describes.
+- `cipher_status`: zero occurrences in the shipped amalgamation;
+  `cipher_version` / `cipher_provider` / `cipher_integrity_check` /
+  `cipher_memory_security` all present. A.6's premise holds.
+
+### Does the applicability conclusion survive with FTS5 compiled in? Yes.
+
+The two FTS5 CVEs keep two independent foreclosed legs each, and only one
+leg was lost:
+
+- **CVE-2025-7709** requires complete control over database content
+  (foreclosed: page HMAC under the database encryption key, and §2 refuses
+  a foreign/plaintext database outright) *and* a corrupt FTS5 index to
+  exist (foreclosed: the schema contains no FTS5 table, and creating one
+  requires SQL the application never issues — attacker data arrives only as
+  bound parameters).
+- **CVE-2026-11822** requires arbitrary SQL (no path exists) *and*
+  `DBCONFIG_DEFENSIVE` off (§3 pins it ON, with readback and abort — so the
+  CVE fails even in the hypothetical where a future SQL-injection bug
+  appears; compiled-in FTS5 adds no reachable capability to an attacker who
+  already has neither leg).
+
+The foreclosure class changed from "the code is absent" to "compiled but
+unreachable." That is a materially weaker class — A.4 is right to say so
+plainly — and it is exactly the class this repo already accepts for the
+libcrux advisories (`deny.toml` ignore block, #41; RUSTSEC-2026-0207/0208/
+0212, "compiled but unreachable via any SHA-3/SHAKE call"). Precedent
+consistent. The property "no applicable advisory" is now continuously
+re-checked by A.3's tripwire rather than established once, which is the
+correct way to arm the gate going forward: an FTS5 CVE that drops the
+DEFENSIVE/arbitrary-SQL preconditions would be a *relevant* advisory and
+would trigger §1's gate.
+
+### Are the runtime mitigations an adequate substitute for `SQLITE_OMIT_LOAD_EXTENSION`? Yes — and the amendment understates one.
+
+Mechanism verified above: capability compiled in, inert by default,
+enabled only by an explicit C-API call Citadel never makes, with
+`trusted_schema = OFF` blocking the schema-embedded path and the open
+sequence plus `store_release_uses_only_pinned_sqlcipher` asserting the
+disabled state. What A.5 does not mention: rusqlite 0.32.1's
+`load_extension_enable` is `#[cfg(feature = "load_extension")]`-gated
+(`src/lib.rs:851-856`) behind the non-default, empty feature
+`load_extension = []` — so on the staged graph the *safe* enabling API is
+not even compiled. The residual path is deliberate unsafe FFI through
+`libsqlite3-sys`, i.e. in-process code acting intentionally, which is
+outside the threat the pin addressed (SQL-reachable extension loading) and
+outside any mitigation a compile flag could offer anyway. Adequate.
+
+### A.6's four-step sequence: confirmed stronger than `PRAGMA cipher_status`, with the load-bearing step named correctly.
+
+`cipher_status` (4.12.0+) attests a handle's codec is configured; it does
+not attest the key is correct. Steps 1–2 (`cipher_version`,
+`cipher_provider`) prove build identity only — they return values on an
+unkeyed handle too — and the amendment correctly does not lean on them.
+Step 3, successful encrypted schema access plus the sentinel, proves
+connection-level codec activity *and* key correctness: an inactive codec or
+a wrong key cannot read the schema at all (first read fails, NOTADB-class).
+That subsumes `cipher_status`'s claim and adds the property it lacked, and
+it is version-independent. Step 4 is unaffected (4.2.0+). §3's
+enable-*or-verify* abort applying to every step, with a missing pragma
+treated as build failure and escalation (rule 8) rather than a skipped
+check, is the right failure semantics. The advisor's read is confirmed.
+
+### Rest of the delta, checked
+
+- **A.1's "OpenSSL by compiled default"** reasoning is sound, and requiring
+  `cipher_provider` readback instead of assuming the pin is the correct
+  substitute for control the patch used to provide.
+- **A.5's `TEMP_STORE=2` acceptance** is sound: 2 defaults temp storage to
+  memory, and §3's per-connection `temp_store = MEMORY` pin with readback
+  delivers the guarantee on the actor's only connection. No security
+  property lost.
+- **A.7's claim that no evidence test is renamed, removed, or weakened**
+  checks out against the body's Evidence section: only pinned values move
+  (4.5.7 / 3.45.3), the dbpage recovery harness follows the shipped source,
+  and the pre-transition positive control still invalidates the test if it
+  misses a value.
+- **B** reproduces the F2 fix exactly as proven (`wrappers =
+  ["libsqlite3-sys"]`, bans re-run ok), and B.3 records the vendored-
+  OpenSSL admission as a named accepted consequence with the rejected
+  alternatives — LibTomCrypt (less-scrutinized C), CommonCrypto (macOS
+  only, cannot serve the matrix), hand-written provider (Alternative 4,
+  correctly rejected). B.4's reopen criteria are scoped correctly. The
+  `deny.toml` edit landing with the store build rather than with this
+  PROPOSED ADR is correct under rule 3 and is not flagged.
+- **D** lists the five items my review verified as unchanged; accurate.
+- **E** keeps the PLAN §9 M2 acceptance-criterion narrowing as charge's
+  separate decision. Correct; nothing inherited by acceptance.
+- The five inline `Amended by Amendment 1` markers in the original prose
+  are present at §1, §3, Alternative 2, Consequences, and Evidence.
+
+### Non-blocking notes
+
+- The A.5 flag table names FTS5; `build.rs:127` also compiles
+  `-DSQLITE_ENABLE_FTS3` unconditionally. No post-3.45.3 CVE targets FTS3
+  and the same compiled-but-uninstantiated foreclosure applies, but the
+  table will be read as authoritative — one line noting FTS3's presence
+  and coverage would make it complete.
+- A.5 says the open sequence "asserts the flag is off" for extension
+  loading, but there is no pragma that reads `SQLITE_LoadExtFunc`. The
+  natural implementation is a behavioral probe — attempt
+  `load_extension()` and require the "not authorized" error — and/or a
+  feature-graph assertion that rusqlite's `load_extension` feature is
+  absent. Pin the mechanism in
+  `store_release_uses_only_pinned_sqlcipher` when it is written; the
+  standing rule already makes a dishonored assertion a build failure.
+
+### Verdict
+
+**K3 review — APPROVE.** My F1 conclusion survives its corrected premise:
+the two lost compile-time pins (FTS5 removal, `OMIT_LOAD_EXTENSION`) are
+adequately substituted, the remaining preconditions carry the applicability
+finding, and A.6's replacement for `cipher_status` is stronger than what it
+replaces. F1 and F2 are folded faithfully; nothing approved in the original
+review is weakened. Recommend charge marks Amendment 1 ACCEPTED — with the
+PLAN §9 M2 acceptance-criterion narrowing still landing as charge's own
+separate decision per §E.
