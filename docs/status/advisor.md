@@ -1,4 +1,4 @@
-# Advisor status - day close 2026-07-25 (M2: one component left)
+# Advisor status - 2026-07-26 (M2: store is the last component)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
@@ -7,59 +7,70 @@ cross-review surfaced something green CI missed.
 
 ## FIRST ACTION next session
 
-**K3's independent design review of ADR-0007.** It is on main and PROPOSED (`7592a26`). Nothing
-else in M2 can move until it is reviewed and charge accepts, because the store is blocked on the
-ADR and the last exit criterion is blocked on the store. Sol authored it and is out of usage
-quota for the week, so it cannot defend it in review; review it on its merits regardless, which
-is what an independent design review is for.
+**Core lane (now Claude Opus 5): fold K3's ADR-0007 review findings as Amendment 1.** K3's
+independent design review returned **CHANGES** and is merged at `9ca9317`
+(`docs/issues/009-adr-0007-store-design-review.md`). The ADR belongs to the core lane, so the
+core lane folds its own review findings. Amendment 1 is doc-only and decides nothing.
 
-The prior FIRST ACTION is RESOLVED: ADR-0007 was uncommitted and is now rescued onto main.
+The two prior FIRST ACTIONs are RESOLVED: ADR-0007 was rescued onto main, and K3's review is done.
 
 ## Resume queue, in order
 
-1. **K3: independent design review of ADR-0007.** Press on exactly one thing.
-   **Alternative 2** rejects the stock bundled SQLCipher 4.5.7 because it "is not 4.17.0, which
-   incorporates current upstream SQLite fixes." That is a preference for newer, not a named
-   threat, and section 1 itself says "a relevant advisory blocks this choice," implying none
-   currently applies. Everything expensive in the ADR hangs off that one line: a
-   repository-local patch of `libsqlite3-sys`, vendored OpenSSL with pinned Configure
-   transcripts, pinned NASM, three-OS byte-comparison of regenerated amalgamations, a CycloneDX
-   SBOM, OSV scanning. That is plausibly more work than the rest of M2 combined and commits the
-   project to maintaining a fork of a C crypto library's build glue indefinitely. The review
-   question is not "is this well designed," because it is. It is: **does a named advisory
-   affecting 4.5.7's embedded SQLite in this usage exist?** If yes, the overlay is justified. If
-   no, stage it: M2 ships on the stock bundle and the reproducibility program becomes its own
-   ADR. K3 owns cargo-audit and cargo-deny, which makes it the right agent to answer that rather
-   than accept an assertion. The rest of the ADR is strong and the verdict should say so.
-2. **charge: two decisions, and they are separate.**
-   (a) Accept or reject ADR-0007 after the review.
+1. **Core lane: ADR-0007 Amendment 1**, per `docs/issues/009`. Both findings and the advisor's
+   addition to F2 are written out in `docs/status/core.md`; that file is the working brief. In
+   short: **F1** stage the SQLCipher overlay out of M2 and ship on the stock bundle (K3 proved
+   the named CVEs against SQLite 3.45.3 all require preconditions ADR-0007's own design
+   forecloses, and cargo-audit over the exact pinned graph was clean, so the overlay fails the
+   ADR's own gate), handling the wrinkle that `PRAGMA cipher_status` is SQLCipher 4.12.0+.
+   **F2** name the `deny.toml` collision the ADR never mentions: `openssl-sys` is banned
+   graph-wide, so the ADR as written cannot build under this project's CI. Take K3's proven
+   `wrappers = ["libsqlite3-sys"]` narrowing, **and record admitting vendored OpenSSL into
+   `citadel-core` as a named accepted consequence**, not a config edit. That process holds
+   plaintext, and the ban's stated intent was that the openssl stack never enters the graph. A
+   future reader must be able to tell a decision from a drift.
+2. **charge: two decisions, still separate.**
+   (a) Accept or reject ADR-0007 once Amendment 1 lands.
    (b) The acceptance-criterion change, which must NOT ride along inside (a). ADR-0007 narrows
-   PLAN section 9 M2's "past messages unreadable" to a persisted-state boundary: current MLS
-   secret state cannot decrypt old-epoch ciphertext, but deliberately retained decrypted history
-   stays readable to anyone holding the database encryption key. **Advisor position: the
-   narrowing is correct.** MLS forward secrecy is a property of key material, not of a local
-   plaintext archive, and Signal behaves the same way; making retained history unreadable is a
-   retention feature, which the ADR defers to a separate design. AGENTS.md reserves
-   acceptance-criterion changes to charge specifically, so it needs a conscious call. The
-   companion doc edits on main deliberately hold this line in each affected file, so nothing has
-   landed by default.
-3. **charge: a staffing decision.** Sol is out of usage quota for the week and the store cannot
-   be built without that lane. Options: a temporary core-seat swap logged under rule 12
-   (`PLAN-CORE.md` already says this lane is "always staffed with the strongest available
-   model," so the mechanism exists); or wait for quota. **Not an option: giving it to K3**,
-   which owns the forward-secrecy test that proves the store works, so it would author both the
-   component and its proof. **Also not an option: the advisor**, which does not write
-   implementation code and is the party that verifies everyone else's.
-4. **Build the store**, then `device_compromise_past_messages_unreadable_fs` (K3), then the
-   **integration checkpoint**, then charge declares M2.
-5. ADR-0006 follow-ups A-D remain binding, tracked, not started.
+   PLAN section 9 M2's "past messages unreadable" to a persisted-state boundary. **Advisor
+   position: the narrowing is correct**, because MLS forward secrecy is a property of key
+   material rather than of a retained plaintext archive, and making retained history unreadable
+   is a retention feature the ADR defers to its own design. K3 flagged this and correctly did
+   not decide it. AGENTS.md reserves acceptance-criterion changes to charge.
+3. **Core lane: build the local encrypted client store** to the accepted design.
+4. **K3: `device_compromise_past_messages_unreadable_fs`**, the fifth and last exit criterion,
+   once the store lands. It is deliberately unwritten today and must stay that way until there is
+   persisted state to capture and wipe.
+5. **Integration checkpoint**, then charge declares M2.
+6. ADR-0006 follow-ups A-D remain binding, tracked, not started.
 
-Outstanding from Sol when quota resets: the `#39` delta re-review against `33fcfe9`, and a
-review of K3's merged exit-AC work at `295d829`. K3 already completed the mirror-image review of
-Sol's `#47` against the merged commit and found nothing.
+Inherited by the core lane from the previous occupant, both small: the `#39` delta re-review
+against `33fcfe9`, and a review of K3's merged exit-AC harness at `295d829`. K3 already completed
+the mirror-image review of `#47` and found nothing.
 
 Deliberately NOT started: Grok's real-core desktop wiring. Unblocked, but M3 scope, held by the
 integration checkpoint. Being unblocked is not the same as being in scope.
+
+## Core seat: Opus 5, and the independence caveat (2026-07-26)
+
+Sol ran out of usage quota mid-milestone with the store unbuilt, so charge staffed the core seat
+with **Claude Opus 5** under rule 12. On the evidence it is the right seat-filling: SWE-bench Pro
+79.2% against Sol's 64.6% and Fable 5's 80.3%, Frontier-Bench 43.3% against Sol's 34.4%, $5/$25
+per M tokens (half Fable's input price), and a 1M context with no harness cap, where Sol's real
+ceiling was 272K against 1M advertised. End-to-end codebase resolution is exactly what building
+the store is.
+
+**The caveat, recorded because it is a genuine reduction in independence: the advisor is also
+Opus 5.** Same-model instances share blind spots. It is bounded rather than fatal, because the
+blocking reviewer of core-lane code is K3, which is a different model and a different vendor, and
+the advisor's function is verifying reports against the repo rather than reviewing code. **The
+mitigation is a hard line: K3 remains the blocking reviewer of everything the core lane writes,
+and the advisor never substitutes for that review, however slow or unavailable K3 is.** If anyone
+is ever tempted to route a core-lane review through the advisor because it is faster, that is the
+moment this structure stops working.
+
+This is also why lanes, branch prefixes, plan files and status files are now named for function
+rather than occupant (rule 12): the seat changed hands twice in three days, and each swap had
+been churning file renames.
 
 ## Advisor report, 2026-07-25
 
@@ -171,7 +182,8 @@ A better model would not have caught the one-sided INV-4 check; K3 reading the c
   run their delta reviews against the merged commits, with anything found becoming a follow-up
   PR. Also not independently reproduced: K3's claim that each new migration test was
   mutation-checked to fail against the pre-fix code.
-- Roster: Sol (GPT-5.6 Sol) core lane, K3 (Kimi K3) services/CI/harness, Grok (Grok 4.5) desktop,
+- Roster: **core lane = Claude Opus 5 since 2026-07-26** (GPT-5.6 Sol held it 07-24 to 07-25 and
+  ran out of usage quota; Claude Opus 4.8 through M1), K3 (Kimi K3) services/CI/harness, Grok (Grok 4.5) desktop,
   parked. The M3 churn rig moved Grok to K3 on 2026-07-25 (see AGENTS.md sequencing).
 - Advisor self-corrections on record: (a) "#38 only blocked by deny.toml" was wrong, CI runs
   cargo-audit too; (b) my `search_path` ordering `public, pg_catalog, pg_temp` was weaker than
@@ -195,7 +207,7 @@ A better model would not have caught the one-sided INV-4 check; K3 reading the c
   fragile thing from the earlier shutdown snapshot: it had existed only as untracked files in a
   sandbox worktree and is now on main at `7592a26`.
 - **Sol is out of usage quota for the week** (charge, 2026-07-25). Its lane is stopped. Its
-  progress report, what it owes, and its track-record notes are in `docs/status/sol.md`.
+  progress report, what it owes, and its track-record notes are in `docs/status/core.md`.
 - **Three decisions are open and all are charge's:** accept or reject ADR-0007; the separate
   acceptance-criterion change that must not ride along inside that acceptance; and the staffing
   call on who builds the store while Sol is out. See queue items 1 through 3.
