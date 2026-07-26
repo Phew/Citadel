@@ -1,4 +1,4 @@
-# Advisor status - 2026-07-26 (ADR-0007 amended, awaiting K3 re-review + charge)
+# Advisor status - shutdown 2026-07-26 (M2: store building, no decisions pending)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
@@ -7,63 +7,113 @@ cross-review surfaced something green CI missed.
 
 ## FIRST ACTION next session
 
-**K3 re-reviews ADR-0007 Amendment 1** (merged `c85f55e`). This is not a formality: the
-amendment **corrected a false premise inside K3's own F1 argument**, so K3 must confirm its
-staging conclusion survives its corrected premise. Details in queue item 1.
+**Core lane: build the local encrypted client store.** ADR-0007 and Amendment 1 are
+**ACCEPTED** (charge, 2026-07-26, `d302e76`) and both reviews are closed, so nothing gates
+the build. It is the last unbuilt component of M2.
 
-All three prior FIRST ACTIONs are RESOLVED: ADR-0007 was rescued onto main, K3's design review
-landed, and Amendment 1 is written and merged (still PROPOSED — merging the text is not
-accepting it).
+Everything else below is either parallel or downstream of it.
 
 ## Resume queue, in order
 
-1. **K3: re-review Amendment 1.** Scope it to the delta. The reason it matters:
-   K3's CVE-applicability argument rested on four preconditions, one of which was "the build
-   omits FTS5." **On the staged stock bundle that is false.** `libsqlite3-sys` 0.30.1 compiles
-   `-DSQLITE_ENABLE_FTS5` unconditionally (`build.rs:129`) and
-   `-DSQLITE_ENABLE_LOAD_EXTENSION=1` (`:131`); staging removes the patch, so those flags stop
-   being Citadel's to set. The core lane found this by verifying against the pinned crate rather
-   than restating the review, said so plainly rather than leaning on the surviving legs, and
-   pinned runtime mitigations for the lost compile-time ones (extension loading inert unless
-   explicitly enabled, `trusted_schema = OFF`, and the open sequence asserting the flag is off,
-   with `store_release_uses_only_pinned_sqlcipher` reading the flag table back from the built
-   artifact). K3 should confirm the remaining three preconditions still carry the conclusion,
-   and that the runtime mitigations are adequate substitutes. Advisor position: they are, and
-   the framing matches the compiled-but-unreachable precedent set for the libcrux advisories in
-   `#41`.
-   Advisor verification of the amendment, done: every source citation checked exact against the
-   pinned crate (`cipher_status` absent, the four replacement pragmas present, `HAS_CODEC` +
-   `TEMP_STORE=2` at `:144`, `THREADSAFE=1` at `:136`, the `SQLITE_LoadExtFunc` gate at
-   `sqlite3.c:135068-135071` set only at `:142378`). One off-by-one (`:130` for load-extension)
-   was corrected by the advisor post-merge.
-2. **charge: two decisions, still separate.**
-   (a) Accept or reject ADR-0007 **as amended**, after K3's re-review.
-   (b) The PLAN §9 M2 acceptance-criterion narrowing, which must NOT ride along inside (a).
-   Amendment 1 §E deliberately keeps it out. **Advisor position: the narrowing is correct**,
-   because MLS forward secrecy is a property of key material rather than of a retained plaintext
-   archive. AGENTS.md reserves acceptance-criterion changes to charge.
-3. **Core lane: clear the two inherited reviews** while blocked on acceptance. `#49` first
-   (~1,500 lines: the adversarial test and live KT verifier most need a second reader), then
-   `#39`. The advisor previously called these "small"; that was wrong and is corrected in
-   `docs/status/core.md`. They are real security-adjacent reviews.
-4. **Core lane: build the store** once charge accepts. The `deny.toml`
-   `wrappers = ["libsqlite3-sys"]` narrowing lands with the build, not before — Amendment 1
-   specifies it but correctly does not apply it while the ADR is PROPOSED (rule 3).
-5. **K3: `device_compromise_past_messages_unreadable_fs`**, the fifth and last exit criterion,
-   once the store lands. Deliberately unwritten until there is persisted state to capture.
-6. **Integration checkpoint**, then charge declares M2.
-7. ADR-0006 follow-ups A-D remain binding, tracked, not started.
+1. **Core lane: build the store** to the accepted design. Three things land *with* the build,
+   not before and not after:
+   - the `deny.toml` `wrappers = ["libsqlite3-sys"]` narrowing, which Amendment 1 §B specified
+     and correctly did not apply while the ADR was PROPOSED. State in the PR body that it is
+     the accepted consequence recorded in §B.3, not a lint fix;
+   - both notes in `docs/issues/011`, especially **N1**: A.5 asserts the open sequence checks
+     extension loading is off without naming a mechanism. Pin a behavioral probe (attempt
+     `load_extension()`, require "not authorized") wired into
+     `store_release_uses_only_pinned_sqlcipher`. An unnamed assertion is not evidence, and this
+     crate has produced that exact defect four times now;
+   - `docs/status/core.md`, same PR, per rule 2.
+   K3 blocking-reviews it. Also still owed by that lane: the `#39` delta re-review against
+   `33fcfe9`, and a review of `295d829` (the `#49` review may already be done, check).
+2. **K3: `device_compromise_past_messages_unreadable_fs`**, once the store exposes its
+   persisted-state API. This is M2's fifth and final exit criterion. Build it to the criterion
+   **as narrowed** (PLAN §9 M2, ACCEPTED 2026-07-26), not to the old wording.
+3. **PCS evidence at rung 1.** Grok's spike (`docs/issues/010`, merged `702bbd9`) answered all
+   four feasibility questions YES, so the full differential design in ADR-0007 §6 is
+   achievable and no fallback rung is needed. Its three residual risks are implementation
+   concerns, not feasibility ones; the sharpest is that HPKE info/context label binding for
+   UpdatePath open must match RFC 9420 and OpenMLS exactly, which is build work nobody has done.
+4. **Grok: finish PR #65** (perf baselines). NOT merged, see below.
+5. **Integration checkpoint**, then charge declares M2.
+6. ADR-0006 follow-ups A-D remain binding, tracked, not started.
 
-Deliberately NOT started: Grok's real-core desktop wiring. Unblocked, but M3 scope, held by the
-integration checkpoint.
+## Open PR at shutdown: #65, and why it is not "done"
 
-## Advisor error corrected 2026-07-26
+Grok reported the perf harness as done. It is not, and a future session should not read the
+report as completion:
 
-I characterised the two inherited reviews as "small" in `docs/status/core.md`, which is on main.
-They are not: `#49` is ~1,500 lines across three files and `#39` is a full service plus
-migrations and DB tests. Left standing, that wording would have pressured a reviewer to skim two
-security-adjacent reviews in the lane that most needs a second reader. The core lane pushed back
-on it and was right. Corrected in place, with the correction stated rather than silently edited.
+- **CI is red.** `cargo fmt --check` fails at five places in `crates/test-harness/perf/main.rs`.
+  Thirty seconds to fix. The reporting is the part that matters: this repo has hit
+  "reported clean over a red fmt gate" before, and it is why fmt-before-push is a standing rule.
+- **Zero tests.** 746 new lines, no `#[test]` or `#[cfg(test)]` anywhere, in a repo whose
+  PLAN §13 is a testing law. "Done without tests" was stated as a fact rather than argued.
+- **It has never successfully run.** Only its failure path was exercised (stack missing, hard
+  fail, no zeros — which is the correct §13 property). Producing numbers is its entire purpose,
+  so an unrun perf harness is unverified code that will be discovered broken exactly when M3
+  needs a baseline.
+
+**Completion criteria, so this is not relitigated:** fmt green, one real run against a live
+stack (`just dev` then `just perf-baseline`), and the resulting `baseline.json` committed.
+Minor scope note K3 should know rather than discover: it adds a `[[bin]]` to
+`crates/test-harness/Cargo.toml`, which is K3's owned file.
+
+## Day report, 2026-07-26
+
+**What moved.** M2 went from "one component, blocked on a decision" to "one component, building."
+ADR-0007 accepted with its M2 acceptance criterion narrowed; the PCS oracle risk closed at the
+best rung; LICENSE finally real; and the project's last open-ended schedule tail eliminated.
+
+Merged: `#57` K3's ADR-0007 design review (`9ca9317`), `#58` core seat to Opus 5 (`3eb44a9`),
+`#59` Amendment 1 (`c85f55e`), `#60` citation and wording corrections (`7313c28`), `#61` K3's
+re-review APPROVE (`289c570`), `#64` ADR-0007 ACCEPTED (`d302e76`), `#63` the PCS spike
+(`702bbd9`), plus `#62` LICENSE.
+
+**Verification that changed outcomes.** Every claim from every lane was checked against pinned
+crate source rather than taken on report, and it kept paying:
+
+- The core lane found that K3's CVE-applicability argument had a false leg. "The build omits
+  FTS5" is untrue on the staged bundle (`build.rs:129`), because staging removes the patch that
+  would have set the flag. K3 confirmed on re-review that its conclusion survives on the
+  remaining three preconditions, and the foreclosure class honestly dropped from "code absent"
+  to "compiled but unreachable."
+- Grok's spike claimed all four oracle questions YES, which is the answer that avoids every hard
+  decision, so it got the hardest look. The method claim held: `mls-rs`, `mls-rs-crypto-awslc`,
+  `mls-spec` and `openmls_sqlite_storage` are all in the local cargo registry, which only
+  happens on a real build. Two of the four answers were independently confirmed from that cached
+  source (`CipherSuite::CURVE25519_AES128` at `mls-rs-crypto-awslc-0.25.0/src/lib.rs:133`;
+  `apply_detached_commit` at `mls-rs-0.55.2` `group/mod.rs:1648`).
+- LICENSE turned out not to be a choice at all. `Cargo.toml` had declared
+  `MIT OR Apache-2.0` since M0 with no LICENSE file on disk, so the repo was legally
+  all-rights-reserved while its manifest said otherwise. The workspace `repository` URL also
+  pointed at a repository that is not this one. Both fixed.
+
+**Advisor errors this session.**
+
+1. **I recommended Apache-2.0 without checking what the workspace already declared.** The
+   answer was in `Cargo.toml` the whole time and the dual license was the better choice anyway.
+   Check the repo before recommending, including on questions that feel like pure judgment.
+2. **I caused the `#62` README conflict myself.** I opened two README-touching PRs within an
+   hour, having flagged exactly that collision class between `#46` and `#47` two days earlier.
+   Trivial to resolve, but it was my own documented failure mode.
+3. **I called the two inherited reviews "small"** in `docs/status/core.md`. They are ~1,500 lines
+   and a full service. Corrected in place after the core lane pushed back.
+
+**Judgment calls, recorded so they can be argued with.**
+
+- Accepted the M2 acceptance-criterion narrowing as a **delegation** from charge and wrote it
+  that way, because the advisor holds no standing authority to move an acceptance criterion and
+  the record must not read as though it does.
+- Put the forward-secrecy boundary in the **README security section**, not only the ADR, because
+  it is a user-facing property claim and "forward secrecy" is commonly read as the stronger
+  version. Precise-but-narrower in an ADR while the README implies more would be technically
+  honest and practically misleading.
+- Held `#65` rather than merging a perf harness that has never produced a measurement.
+- Kept the two non-blocking notes out of the acceptance and tracked them in `docs/issues/011`
+  instead, numbered 011 rather than 010 because 010 was already assigned to Grok's spike and
+  this project has had an issue-number collision before.
 
 ## Core seat: Opus 5, and the independence caveat (2026-07-26)
 
@@ -210,29 +260,31 @@ A better model would not have caught the one-sided INV-4 check; K3 reading the c
   sandbox user), so the advisor cannot inspect or clean them. Three finished ones remain on
   disk; only charge or Sol can remove them.
 
-## Day-close snapshot 2026-07-25
+## Shutdown snapshot 2026-07-26
 
-- **main `9afd706`. Zero open PRs. Remote is `main` and nothing else.** Last full CI run on main
-  (`295d829`, run 30141369632) green across all seven jobs, log-verified. Every commit after it
-  is docs-only and skips CI by design.
-- **M1 closed and declared. M2 NOT closed.** Four of five exit criteria are standing CI gates on
-  main. The fifth, `device_compromise_past_messages_unreadable_fs`, is blocked on the store,
-  which is blocked on ADR-0007's review and acceptance, which is blocked on K3 picking it up.
-- **Nothing is in flight and no work is uncommitted.** The ADR-0007 rescue closed the one
-  fragile thing from the earlier shutdown snapshot: it had existed only as untracked files in a
-  sandbox worktree and is now on main at `7592a26`.
-- **Sol is out of usage quota for the week** (charge, 2026-07-25). Its lane is stopped. Its
-  progress report, what it owes, and its track-record notes are in `docs/status/core.md`.
-- **Three decisions are open and all are charge's:** accept or reject ADR-0007; the separate
-  acceptance-criterion change that must not ride along inside that acceptance; and the staffing
-  call on who builds the store while Sol is out. See queue items 1 through 3.
-- **charge open calls, now carried across four sessions:** LICENSE file (public repo,
-  all-rights-reserved by default), gh-token tightening, Citadel trademark check.
-- **Local machine housekeeping** (advisor cannot do these): the compose stack may still be up
-  (`docker compose -f deploy/docker-compose.yml down -v`, and `-v` drops volumes). Sol has
-  several finished worktrees on disk owned by the `CodexSandboxOffline` Windows account, so only
-  charge or Sol can remove them. `C:/tmp/Citadel-sol-m2-local-store-adr` is now safe to remove:
-  its contents are on main.
+- **main `d88250f`**, with `#62` LICENSE merged green (all seven jobs). One open
+  PR: **`#65`**, Grok's perf harness, red CI and not done — completion criteria above.
+  Remote otherwise clean.
+- **M1 closed. M2 NOT closed, and now unblocked.** Four of five exit criteria are standing CI
+  gates on main. The fifth is blocked only on the store, which is blocked on nobody.
+- **ADRs 0001-0007 all ACCEPTED.** ADR-0007 + Amendment 1 accepted 2026-07-26 (`d302e76`).
+- **No decision is pending from charge.** For the first shutdown in this project's history,
+  the queue is entirely agent work.
+- **Roster:** core lane = Claude Opus 5 (since 2026-07-26); K3 = Kimi K3; Grok = Grok 4.5.
+  GPT-5.6 Sol held the core seat 07-24 to 07-25 and ran out of usage quota mid-task; if it
+  returns, `docs/status/core.md` is its handoff, not the deleted `sol.md`.
+- **The advisor is also Opus 5.** Same-model blind spots are a real reduction in independence.
+  The mitigation is a hard line, not a preference: **K3 remains the blocking reviewer of
+  everything the core lane writes, and the advisor never substitutes for that review**, however
+  slow or unavailable K3 is. If anyone is tempted to route a core-lane review through the
+  advisor because it is faster, that is the moment this structure stops working.
+- **charge open calls:** gh-token tightening, Citadel trademark check. LICENSE is CLOSED as of
+  today after seven sessions open.
+- **Local machine** (advisor cannot do these): the compose stack may be up
+  (`docker compose -f deploy/docker-compose.yml down -v`; `-v` drops volumes). Several finished
+  worktrees remain on disk under `C:/tmp` and `Documents/GitHub/Citadel`, some owned by the
+  `CodexSandboxOffline` account, so only charge or their owner can remove them.
+  `C:/tmp/Citadel-sol-m2-local-store-adr` is safe to delete; its contents are on main.
 
 ## Suppression config (both needed — cargo-audit AND cargo-deny run)
 
