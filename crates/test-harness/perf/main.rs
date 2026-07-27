@@ -458,12 +458,7 @@ async fn run_subscribe(runs: usize, n_subs: usize) -> Result<SubscribeBaseline> 
 }
 
 async fn run_fetch(runs: usize, seed_count: usize) -> Result<FetchBaseline> {
-    // seed_count should be >= MESSAGES_PAGE_LIMIT to exercise the limit.
-    if seed_count < MESSAGES_PAGE_LIMIT {
-        bail!(
-            "seed_count {seed_count} < MESSAGES_PAGE_LIMIT {MESSAGES_PAGE_LIMIT}; refuse decorative baseline"
-        );
-    }
+    validate_fetch_seed(seed_count)?;
 
     let mut first_page_ms = Vec::new();
     let mut full_ms = Vec::new();
@@ -623,49 +618,85 @@ fn parse_args() -> Result<Args> {
     })
 }
 
+/// One latency metric compared between two reports (p50 ms, percent change).
+#[derive(Debug, Clone, PartialEq)]
+struct MetricDelta {
+    name: &'static str,
+    old_ms: f64,
+    new_ms: f64,
+    /// Percent change: `(new - old) / old * 100`. Only defined when `old_ms > 0`.
+    pct: f64,
+}
+
+/// Pure comparison of p50 latency metrics. Used by `--diff` and unit-tested so
+/// a same-path write-before-load bug cannot silently report all +0.0%.
+fn compare_p50_deltas(prev: &BaselineReport, cur: &BaselineReport) -> Vec<MetricDelta> {
+    let mut out = Vec::new();
+    let mut push = |name: &'static str, old: f64, new: f64| {
+        if old > 0.0 {
+            out.push(MetricDelta {
+                name,
+                old_ms: old,
+                new_ms: new,
+                pct: (new - old) / old * 100.0,
+            });
+        }
+    };
+    push(
+        "f2 e2e p50",
+        prev.f2.group_create_and_welcome_ms.p50_ms,
+        cur.f2.group_create_and_welcome_ms.p50_ms,
+    );
+    push(
+        "f4 rtt p50",
+        prev.f4.round_trip_ms.p50_ms,
+        cur.f4.round_trip_ms.p50_ms,
+    );
+    push(
+        "subscribe all p50",
+        prev.subscribe.all_subscribe_ms.p50_ms,
+        cur.subscribe.all_subscribe_ms.p50_ms,
+    );
+    push(
+        "fetch first page p50",
+        prev.fetch.first_page_ms.p50_ms,
+        cur.fetch.first_page_ms.p50_ms,
+    );
+    out
+}
+
 fn diff_reports(prev: &BaselineReport, cur: &BaselineReport) {
     eprintln!(
         "\n=== diff vs prior baseline (git {}) ===",
         prev.environment.git_sha
     );
-    let check = |name: &str, old: f64, new: f64| {
-        if old <= 0.0 {
-            return;
-        }
-        let pct = (new - old) / old * 100.0;
-        let flag = if pct > 25.0 {
+    for d in compare_p50_deltas(prev, cur) {
+        let flag = if d.pct > 25.0 {
             "  << slower"
-        } else if pct < -25.0 {
+        } else if d.pct < -25.0 {
             "  << faster"
         } else {
             ""
         };
-        eprintln!("  {name}: {old:.2} -> {new:.2} ms ({pct:+.1}%){flag}");
-    };
-    check(
-        "f2 e2e p50",
-        prev.f2.group_create_and_welcome_ms.p50_ms,
-        cur.f2.group_create_and_welcome_ms.p50_ms,
-    );
-    check(
-        "f4 rtt p50",
-        prev.f4.round_trip_ms.p50_ms,
-        cur.f4.round_trip_ms.p50_ms,
-    );
-    check(
-        "subscribe all p50",
-        prev.subscribe.all_subscribe_ms.p50_ms,
-        cur.subscribe.all_subscribe_ms.p50_ms,
-    );
-    check(
-        "fetch first page p50",
-        prev.fetch.first_page_ms.p50_ms,
-        cur.fetch.first_page_ms.p50_ms,
-    );
+        eprintln!(
+            "  {}: {:.2} -> {:.2} ms ({:+.1}%){flag}",
+            d.name, d.old_ms, d.new_ms, d.pct
+        );
+    }
     eprintln!(
         "  f4 sustained msg/s: {:.1} -> {:.1}",
         prev.f4.sustained_send_throughput_msg_per_s, cur.f4.sustained_send_throughput_msg_per_s
     );
+}
+
+/// Refuse decorative fetch baselines that never hit the page limit.
+fn validate_fetch_seed(seed_count: usize) -> Result<()> {
+    if seed_count < MESSAGES_PAGE_LIMIT {
+        bail!(
+            "seed_count {seed_count} < MESSAGES_PAGE_LIMIT {MESSAGES_PAGE_LIMIT}; refuse decorative baseline"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -727,6 +758,25 @@ async fn main() -> Result<()> {
     let json = serde_json::to_string_pretty(&report).context("serialize report")?;
     println!("{json}");
 
+    // Load --diff into memory *before* --write. `just perf-baseline` passes the
+    // same path to both flags; writing first would overwrite the prior baseline
+    // and make every compare report +0.0% against itself.
+    let prior: Option<BaselineReport> = if let Some(path) = &args.diff {
+        if path.exists() {
+            let text =
+                fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+            Some(
+                serde_json::from_str(&text)
+                    .with_context(|| format!("parse prior baseline {}", path.display()))?,
+            )
+        } else {
+            eprintln!("--diff {}: file missing, skip compare", path.display());
+            None
+        }
+    } else {
+        None
+    };
+
     if let Some(path) = &args.write {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok();
@@ -735,15 +785,8 @@ async fn main() -> Result<()> {
         eprintln!("wrote {}", path.display());
     }
 
-    if let Some(path) = &args.diff {
-        if path.exists() {
-            let prev: BaselineReport = serde_json::from_str(
-                &fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?,
-            )?;
-            diff_reports(&prev, &report);
-        } else {
-            eprintln!("--diff {}: file missing, skip compare", path.display());
-        }
+    if let Some(prev) = &prior {
+        diff_reports(prev, &report);
     }
 
     Ok(())
@@ -858,12 +901,89 @@ mod tests {
     }
 
     #[test]
-    fn fetch_seed_below_page_limit_is_rejected_by_contract() {
-        // run_fetch is async/stack-bound; the gate it enforces is this constant check.
-        let seed = MESSAGES_PAGE_LIMIT - 1;
+    fn fetch_seed_below_page_limit_is_rejected() {
+        assert!(validate_fetch_seed(MESSAGES_PAGE_LIMIT - 1).is_err());
+        assert!(validate_fetch_seed(0).is_err());
+        assert!(validate_fetch_seed(MESSAGES_PAGE_LIMIT).is_ok());
+        assert!(validate_fetch_seed(MESSAGES_PAGE_LIMIT + 50).is_ok());
+    }
+
+    fn sample_report(f2_p50_ms: f64) -> BaselineReport {
+        BaselineReport {
+            schema: "citadel-perf-baseline-v1".into(),
+            environment: Environment {
+                hostname: "test-host".into(),
+                os: "windows".into(),
+                arch: "x86_64".into(),
+                cpu_count: 8,
+                rustc: "rustc test".into(),
+                git_sha: "deadbeef".into(),
+                timestamp_utc: "unix:0".into(),
+                stack_note: "unit-test".into(),
+            },
+            f2: F2Baseline {
+                group_create_and_welcome_ms: percentiles(vec![f2_p50_ms]),
+                initiator_create_submit_ms: percentiles(vec![1.0]),
+                per_joiner_welcome_join_ms: percentiles(vec![2.0]),
+                clients_per_run: 3,
+                runs: 1,
+            },
+            f4: F4Baseline {
+                round_trip_ms: percentiles(vec![5.0]),
+                sustained_send_throughput_msg_per_s: 12.5,
+                sustained_send_count: 50,
+                sustained_send_wall_ms: 4000.0,
+                runs: 1,
+            },
+            subscribe: SubscribeBaseline {
+                concurrent_subscribers: 5,
+                all_subscribe_ms: percentiles(vec![10.0]),
+                fanout_to_last_subscriber_ms: percentiles(vec![11.0]),
+                runs: 1,
+            },
+            fetch: FetchBaseline {
+                messages_seeded: 550,
+                page_limit: MESSAGES_PAGE_LIMIT,
+                first_page_ms: percentiles(vec![100.0]),
+                first_page_count: 500,
+                first_page_has_more: true,
+                full_pagination_ms: percentiles(vec![200.0]),
+                pages_walked: 2,
+                runs: 1,
+            },
+        }
+    }
+
+    /// Would have caught write-before-load: if comparison always saw current vs
+    /// current (or always zeroed), this fails. Same-path --write/--diff must
+    /// load prior first, then write, then compare against the in-memory prior.
+    #[test]
+    fn compare_reports_nonzero_delta_when_metrics_differ() {
+        let prior = sample_report(100.0);
+        let current = sample_report(150.0); // +50% on f2 e2e p50
+        let deltas = compare_p50_deltas(&prior, &current);
+        let f2 = deltas
+            .iter()
+            .find(|d| d.name == "f2 e2e p50")
+            .expect("f2 e2e p50 present");
         assert!(
-            seed < MESSAGES_PAGE_LIMIT,
-            "contract: decorative baselines under the page limit are forbidden"
+            f2.pct.abs() > 0.0,
+            "differing reports must produce a nonzero delta, got {f2:?}"
+        );
+        assert!(
+            (f2.pct - 50.0).abs() < 1e-9,
+            "expected +50%, got {}",
+            f2.pct
+        );
+        assert_eq!(f2.old_ms, 100.0);
+        assert_eq!(f2.new_ms, 150.0);
+
+        // Identity compare still yields zeros (the bug mode); ensure that path
+        // is distinguishable from a real regression.
+        let self_deltas = compare_p50_deltas(&current, &current);
+        assert!(
+            self_deltas.iter().all(|d| d.pct == 0.0),
+            "self-compare must be all +0.0%, got {self_deltas:?}"
         );
     }
 }

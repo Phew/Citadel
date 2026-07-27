@@ -38,6 +38,11 @@ manual / scheduled tool so it cannot become a flaky gate or a CI time sink.
 PLAN §13 forbids a green empty report. A real run is committed with environment
 metadata; later runs `--diff` against it.
 
+`just perf-baseline` passes the **same path** to `--write` and `--diff`. The
+binary loads the prior file into memory first, then overwrites it with the new
+report, then diffs against the in-memory prior — so successive runs report real
+deltas (not always +0.0% against the file just written).
+
 Every report embeds the environment (hostname, OS, arch, CPU count, rustc, git
 SHA, timestamp, stack note). A baseline without its environment is noise; do
 not strip it.
