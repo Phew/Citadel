@@ -5,8 +5,9 @@
   its two blocking findings were folded as Amendment 1, and K3's re-review returned
   **APPROVE** (`docs/issues/009` rev 2, merged `289c570`). Recorded by the advisor on
   charge's instruction. Build may start.
-  Two non-blocking notes from the re-review are **not** folded here and are tracked in
-  `docs/issues/011-adr-0007-non-blocking-notes.md`; they land with the store build.
+  Two non-blocking notes from the re-review were **not** folded at acceptance and were
+  tracked in `docs/issues/011-adr-0007-non-blocking-notes.md`. Both landed with the store
+  build and are folded into Amendment 1 §A.5 and §A.7; the issue is CLOSED.
 - **Date:** 2026-07-24 (body); 2026-07-26 (Amendment 1)
 - **Deciders:** charge (required for ACCEPTED); independent design review: K3
   **complete — CHANGES**, `docs/issues/009-adr-0007-store-design-review.md`
@@ -934,6 +935,7 @@ rather than left to drift. Verified against `build.rs` in the pinned crate:
 | `SQLITE_TEMP_STORE=3` | `=2` (`:144`) | **Accepted at 2.** `2` already defaults temp storage to memory, and §3's per-connection `temp_store = MEMORY` pin with readback delivers the guarantee on the actor's only connection. No security property is lost. |
 | `SQLITE_EXTRA_INIT` / `SQLITE_EXTRA_SHUTDOWN` | absent | **Pin dropped.** These are mandatory only from SQLCipher 4.7.0; 4.5.7 initializes correctly without them, which is the configuration the stock crate ships and exercises. |
 | remove FTS5 | `-DSQLITE_ENABLE_FTS5` set (`:129`) | **Cannot be honored.** Accepted per A.4. |
+| remove FTS3 | `-DSQLITE_ENABLE_FTS3` (`:127`) and `-DSQLITE_ENABLE_FTS3_PARENTHESIS` (`:128`) set | **Cannot be honored.** Same class as FTS5, accepted on the same reasoning: the schema creates no FTS table of any kind and the application issues no attacker-influenced SQL. Recorded because this table is the standing reference for what the staged bundle compiles, and a reader checking a future FTS3 advisory against an incomplete table would get the wrong answer. (docs/issues/011 N2, closed by the store build.) |
 | `SQLITE_OMIT_LOAD_EXTENSION` | `-DSQLITE_ENABLE_LOAD_EXTENSION=1` set (`:131`) | **Cannot be honored.** Mitigated at runtime, below. |
 
 **Extension loading, since the compile-time pin is gone.** The capability is
@@ -945,6 +947,26 @@ things instead: it **never** calls `rusqlite`'s `load_extension_enable` or the
 underlying C API on any connection; §3's existing `trusted_schema = OFF` pin
 blocks a schema-embedded invocation; and the open sequence asserts the flag is
 off. A build in which extension loading can be enabled fails closed.
+
+**The mechanism of that assertion, named (docs/issues/011 N1, closed by the
+store build).** The sentence above originally said "the open sequence asserts
+the flag is off" without saying how, and an unnamed assertion is not evidence.
+The mechanism is a **behavioral probe**, not an inspection:
+`citadel_core::store::open::probe_extension_loading_is_refused` runs
+`SELECT load_extension(<a name that does not exist>)` on the live connection at
+the end of every open and requires the call to fail with exactly
+`not authorized`. That string is not incidental — it is what `loadExt` returns
+when `SQLITE_LoadExtFunc` is clear (`sqlcipher/sqlite3.c:135068-135074`) — and
+requiring it is what separates "refused" from "reached the loader and could not
+find the file", which is what a *set* flag would produce. The probe is wired
+into `store_release_uses_only_pinned_sqlcipher`, and the open aborts if it does
+not hold.
+
+A supporting fact, which strengthens the position but deliberately does **not**
+replace the probe: `rusqlite` 0.32.1 gates `load_extension_enable` behind a
+`load_extension` feature, and declares no default features at all, so the safe
+enabling API is not compiled on this graph. The probe's value is that it keeps
+holding if a future dependency change quietly enables that feature.
 
 **Standing rule for the staged flag set:** the pins above are what M2 asserts,
 and `store_release_uses_only_pinned_sqlcipher` reads them back from the built
@@ -981,8 +1003,12 @@ and an escalation under AGENTS.md rule 8 — not a skipped step.
 
 - `store_release_uses_only_pinned_sqlcipher` reads back `PRAGMA cipher_version`
   = **4.5.7** and `PRAGMA cipher_provider` = OpenSSL, asserts the A.5 flag table
-  including extension loading being disabled, and still proves a single
-  `rusqlite` / `libsqlite3-sys` graph with no system-library input.
+  — including the behavioral `load_extension()` probe named in A.5 and the FTS3
+  and FTS5 rows, which it asserts are **present** rather than absent, because
+  A.4's foreclosure rests on "compiled but unreachable" and a bundle that
+  actually removed them would need the record corrected rather than quietly
+  improved — and still proves a single `rusqlite` / `libsqlite3-sys` graph with
+  no system-library input.
 - `store_and_oracle_dependencies_pass_advisory_and_license_policy` covers
   SQLCipher **4.5.7** and embedded SQLite **3.45.3** in place of 4.17.0, against
   the lightweight manifest and SBOM of A.3.

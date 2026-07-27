@@ -48,6 +48,18 @@ jobs:
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
 
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
@@ -121,6 +133,51 @@ jobs:
       - name: cargo deny
         run: cargo deny check
 
+  # ADR-0007 §2 requires the local encrypted client store's credential-store
+  # contract to be exercised against the REAL native backend, not a double. The
+  # full requirement is one runner per desktop target; this repository has only
+  # Linux runners, so this job covers the Linux third of it and the Windows and
+  # macOS thirds remain open (stated in crates/citadel-core/src/store/tests.rs
+  # rather than left to be discovered).
+  #
+  # The tests it runs are #[ignore]d by default on purpose: a developer machine
+  # with no D-Bus session must not appear to have covered them. AGENTS.md rule 4
+  # says missing infrastructure is a test failure, so this job PROVISIONS the
+  # infrastructure and runs them with --include-ignored, instead of letting them
+  # be silently skipped in the one place they are claimed as evidence.
+  store-evidence:
+    name: store · native Secret Service backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      # dbus-x11 supplies dbus-run-session; gnome-keyring supplies the Secret
+      # Service implementation the adapter actually talks to.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev dbus-x11 gnome-keyring
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # An empty password for a throwaway CI keyring. The tests write only under
+      # a per-process service identity, so they cannot touch anything else even
+      # if a runner were reused.
+      - name: Native credential-store conformance
+        run: |
+          dbus-run-session -- bash -c '
+            echo -n "" | gnome-keyring-daemon --unlock --components=secrets
+            cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
+          '
+
   compose-smoke:
     name: docker compose health
     runs-on: ubuntu-latest
@@ -133,6 +190,18 @@ jobs:
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
+
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -213,6 +282,18 @@ jobs:
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
 
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
@@ -240,6 +321,18 @@ jobs:
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
+
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1

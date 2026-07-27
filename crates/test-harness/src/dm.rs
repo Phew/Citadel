@@ -22,7 +22,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use citadel_core::credential::IdentityVerifier;
-use citadel_core::crypto::Provider;
+use citadel_core::crypto::EphemeralProvider as Provider;
 use citadel_core::group::{AddMembersOutput, DmGroup};
 use citadel_core::identity::DeviceIdentity;
 use citadel_proto::auth::{

@@ -74,7 +74,7 @@ flowchart LR
 | Group crypto | [OpenMLS](https://github.com/openmls/openmls) (RFC 9420), `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` |
 | Backend | Rust · axum · tokio · sqlx · PostgreSQL 16 |
 | Desktop | Tauri 2 · React · TypeScript · Tailwind |
-| Local encrypted client store | SQLite + SQLCipher, database encryption key in the OS credential store ([ADR-0007](docs/decisions/0007-local-encrypted-client-store.md), accepted; build in progress) |
+| Local encrypted client store | SQLite + SQLCipher 4.5.7, database encryption key in the OS credential store ([ADR-0007](docs/decisions/0007-local-encrypted-client-store.md), accepted and built) |
 | Key transparency | `kt-log`: RFC 6962 Merkle log, signed tree heads, embedded trust anchor |
 | Attachments | S3-compatible (MinIO in dev), client-side encrypted |
 
@@ -137,7 +137,9 @@ plans/                    architecture plan + team process
 
 **M2 remains open, with one component left.** On main: the client MLS engine, the delivery message path, the WebSocket gateway, the mock-backed desktop shell, and the live exit harness. Four of M2's five exit criteria run as standing CI gates on every push, and the canary scan now drives real DM plaintext through the full send/receive path, so the no-plaintext invariant is checked against actual message content rather than synthetic markers.
 
-The fifth criterion, forward secrecy against a captured device, is deliberately unwritten: `citadel-core` currently holds MLS state in memory, so there is nothing persisted to capture and wipe, and a test written today would pass while proving nothing. [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) is **accepted** (2026-07-26, after an independent design review that returned changes and a re-review that approved the amended version) and specifies the last unbuilt component: the local encrypted client store, plus the exact persisted-state boundary the forward-secrecy and post-compromise tests are written against. M2 closes when that store is built and those two tests pass.
+The fifth criterion, forward secrecy against a captured device, is the last one open. [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) was **accepted** on 2026-07-26 after an independent design review that returned changes and a re-review that approved the amended version, and the local encrypted client store it specifies is now **built and on main**: SQLCipher whole-database encryption, a 32-byte key held only in the OS credential store, OpenMLS state and application state committing in one transaction, and durable pending-transmission bytes so a restart between commit and acknowledgement retries exactly once.
+
+What that changed is that there is now something real to capture and wipe, so the test can be honest. Inside `citadel-core`, `post_restart_snapshot_proves_mls_forward_secrecy` already runs it against persisted state: it hands an attacker the database, every SQLite sidecar file, and the correct key, proves a pre-transition snapshot decrypts an old-epoch message, then proves that after the epoch transition the same never-seen message fails with OpenMLS's exact `TooDistantInThePast` error while a current-epoch message still decrypts. What remains is the cross-client version of that on the live stack, `device_compromise_past_messages_unreadable_fs`, which is still deliberately unwritten rather than stubbed. M2 closes when it and the post-compromise evidence pass.
 
 Deliberately out of scope for v1: federation, mobile, account recovery, sealed sender. Each returns via ADR when its time comes ([`plans/PLAN.md` §12](plans/PLAN.md)).
 

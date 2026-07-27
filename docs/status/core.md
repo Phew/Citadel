@@ -1,4 +1,4 @@
-# Core lane status — currently Opus 5 (M2: one component left)
+# Core lane status — currently Opus 5 (M2: store built, one exit criterion left)
 
 **Lane:** security core. **Branch prefix:** `sol/` is retired; use `core/<task>`.
 **Audience:** a fresh instance of this lane with zero memory. Read `plans/PLAN.md`,
@@ -23,15 +23,26 @@ Four of five M2 exit criteria are standing CI gates on main and execute on every
 `f2_three_client_dm_creation`, `f4_send_receive_roundtrip`, `no_plaintext_scan_delivery_tables`,
 `pcs_recover_after_update`, `adversarial_ds_swapped_keypackage_rejected`.
 
-The fifth, `device_compromise_past_messages_unreadable_fs`, is **deliberately unwritten** and
-must stay that way until this lane's work lands. MLS state is currently in-memory only
-(`Provider = OpenMlsRustCrypto`), so an FS test today could only assert that dropping an object
-loses the object: it would pass while proving nothing, and a green vacuous test is worse than a
-missing one because it looks like evidence. K3 recorded that reasoning in
-`crates/test-harness/tests/m2_dm.rs`. **Do not close that gap with a placeholder.**
+**The local encrypted client store is BUILT** (`crates/citadel-core/src/store/`, ADR-0007 as
+amended). MLS state is no longer in-memory: the old `crypto::Provider` alias is gone, replaced by
+an explicitly named `crypto::EphemeralProvider` for the cases that have no store yet, and
+`store::StoreProvider` over a keyed SQLCipher connection for everything else. See "The store, as
+landed" below for the API surface, the evidence that exists, and the evidence that does not.
 
-So M2 needs exactly one thing: the local encrypted client store, plus the FS test that becomes
-possible once persisted state exists.
+The fifth criterion, `device_compromise_past_messages_unreadable_fs`, is **still deliberately
+unwritten, and is K3's**. The reason has changed but the rule has not: what made a placeholder
+wrong before was that there was nothing persisted to capture, and what makes one wrong now is
+that the cross-client test on the live stack is the thing M2 is actually claiming. K3 recorded
+the reasoning in `crates/test-harness/tests/m2_dm.rs`. **Do not close that gap with a
+placeholder.**
+
+The store-level version of that proof does exist and passes:
+`post_restart_snapshot_proves_mls_forward_secrecy` hands an attacker the database, every SQLite
+sidecar, and the correct key, and requires the exact `ProcessMessageError::ValidationError`
+-> `UnableToDecrypt` -> `SecretTreeError(TooDistantInThePast)` chain for a never-processed
+old-epoch ciphertext, with a pre-transition control that must decrypt it and a current-epoch
+control that must still decrypt after the transition. That is evidence the machinery works, not
+a substitute for the harness AC.
 
 ## Immediate task, in order
 
@@ -72,8 +83,83 @@ possible once persisted state exists.
      to tell a decision from a drift.
 2. **Wait for charge to accept.** Rule 3: a decision exists only when committed. Do not start
    the build on a PROPOSED ADR.
-3. **Build the local encrypted client store** to the accepted design.
-4. **Hand the persisted-state API to K3** for `device_compromise_past_messages_unreadable_fs`.
+3. ~~**Build the local encrypted client store** to the accepted design.~~ **DONE** - see
+   "The store, as landed" below.
+4. ~~**Hand the persisted-state API to K3** for `device_compromise_past_messages_unreadable_fs`.~~
+   **DONE** - the handoff is in the store PR body and summarised under "The store, as landed".
+
+## The store, as landed
+
+Branch `core/local-encrypted-store`. Everything ADR-0007 sections 1-6 specify that does not
+need release CI, plus the three things required to land in the same PR: the `deny.toml`
+narrowing, both `docs/issues/011` notes, and this file.
+
+**Module map** (`crates/citadel-core/src/store/`): `key` (the 32-byte key and its canonical raw
+SQLCipher literal), `credentials` (the OS contract plus Windows / macOS / Linux adapters and a
+test-only double), `paths` + `lock` (fixed paths, containment, the `File::try_lock` profile
+lock), `open` (keying, the section 3 hardening set with readback, the Amendment 1 A.6 codec
+sequence, the N1 extension probe), `schema` + `migrations/V1__initial.sql` (application schema
+and its own named history table), `codec` (`citadel-openmls-json-v1`), `provider` (`RustCrypto`
+plus `openmls_sqlite_storage` over a borrowed connection), `ledger` (operation IDs, request
+fingerprints, the monotonic sequence, the 256-outcome ring), `lifecycle` (section 2's startup
+state machine, staged creation, destruction), `actor` (the public `LocalStore`), `evidence`
+(`testing`-gated snapshot capture and reopen).
+
+**The persisted-state API K3 needs**, stated explicitly because it is what the FS test drives:
+
+- `LocalStore::open(ProfilePaths, Arc<dyn CredentialStore>)`, plus `close()` and `destroy()`.
+  `ProfilePaths::at_root` is `testing`-gated so a test can put a profile in a tempdir; production
+  has no way to relocate one out of the platform application-data directory.
+- Every state-changing call takes a caller-generated `OperationId` and returns an
+  `OperationOutcome`: `create_group`, `new_key_package`, `join_from_welcome`, `add_members`,
+  `send`, `receive`, `prepare_self_update`, `confirm_self_update`, `abort_self_update`,
+  `accept_kt_head`. Retrying the same ID returns the stored outcome without reapplying.
+- Reads: `conversations`, `messages`, `pending_transmissions`, `acknowledge_transmission`,
+  `kt_checkpoint`, `group_epoch`, `operation_high_water`, `verify_integrity`.
+- Evidence surface (`testing` feature): `LocalStore::paths()` enumerates every file the profile
+  owns; `database_encryption_key_for_evidence()` returns the correct key;
+  `evidence::CapturedSnapshot::capture_files(&paths, key, into)` copies the live set with **no**
+  cleanup step; `has_live_rollback_journal()` reports snapshot eligibility; `reopen()` keys the
+  copy through the production open sequence; and `ReopenedSnapshot::try_process_message` drives
+  the real OpenMLS path **bypassing application deduplication**, handing back OpenMLS's own typed
+  error, which is what makes the exact-chain assertion possible. `max_past_epochs()` returns
+  `Option<usize>`, and `None` must be treated as a failure rather than as zero.
+
+**How obsolete epoch state is deleted**, since that is the other half of what the test drives:
+Citadel does not delete it. OpenMLS does, through its storage trait, in the same transaction that
+persists the new state, because `max_past_epochs` is pinned to 0. So the sequence is
+`prepare_self_update` then `confirm_self_update` returning success - which on a live filesystem
+has already removed the rollback journal - and only then is a snapshot eligible. There is no
+checkpoint call, no vacuum, and no test-only cleanup, deliberately.
+
+**Two findings from the build worth carrying forward.**
+
+- **openmls 0.8.1 has no public `max_past_epochs()` on `MlsGroupJoinConfig`.** The field is
+  `pub(crate)`, and the getter at `config.rs:191` belongs to the *create* config while
+  `MlsGroup::configuration()` returns the *join* config. So section 6's fail-closed check could
+  not be written the obvious way. `crypto::retained_past_epochs` reads the value out of the
+  config's serde representation instead, which is the same representation the provider persists,
+  so the check reads what is actually on disk. Recorded in `docs/issues/011`.
+- **`PRAGMA cipher_memory_security` must be set BEFORE `PRAGMA key`, and read back after.**
+  `sqlcipher_get_mem_security` reports enabled only when the pragma is on *and* SQLCipher's
+  allocator has already run (`sqlite3.c:109000-109004`), and the codec allocation during keying
+  is what runs it. Setting it after keying reads back 0 and aborts a correctly configured store.
+  It also returns TEXT rather than INTEGER.
+
+**What is NOT built, stated so nobody infers otherwise.** Four named ADR-0007 evidence tests are
+absent, and the module's test file says so at the top: the three-desktop-target release build and
+the per-OS native-backend conformance run (this repo has only Linux runners; the new
+`store-evidence` CI job covers the Linux third); the native manifest, SBOM and pinned-scanner job
+of Amendment 1 A.3; the `mls-rs` / `mls-spec` / AWS-LC PCS differential oracle; and the
+three-target latency benchmark. `store_epoch_transition_removes_obsolete_secret_bytes` is present
+but **partial**: it proves the obsolete rows are gone logically and do not appear verbatim in the
+file, and it does not yet do the `SQLITE_ENABLE_DBPAGE_VTAB` plus `dbdata.c` page reconstruction
+the ADR specifies.
+
+**Local build note.** `bundled-sqlcipher-vendored-openssl` needs a Windows-native Perl to build
+vendored OpenSSL; Git's msys Perl fails at `Configure` on a missing `Locale::Maketext::Simple`.
+A portable Strawberry Perl plus `OPENSSL_SRC_PERL` works. CI is Linux and needs none of that, but
+it does need `libdbus-1-dev`, which the compiling jobs now install explicitly.
 
 ## Amendment 1, as landed (2026-07-26)
 
