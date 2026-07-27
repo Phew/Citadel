@@ -67,3 +67,9 @@ migrate:
 # Status of compose services.
 ps:
     docker compose -f deploy/docker-compose.yml ps
+
+# On-demand perf baselines against the live stack (not a CI gate).
+# Fails loudly if the stack is down (PLAN §13). Writes/diffs
+# crates/test-harness/perf/baseline.json. Fetch seeds 550 messages — slow.
+perf-baseline:
+    cargo run -p test-harness --bin perf-baseline -- --write crates/test-harness/perf/baseline.json --diff crates/test-harness/perf/baseline.json

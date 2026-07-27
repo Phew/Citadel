@@ -1,0 +1,107 @@
+{
+  "schema": "citadel-perf-baseline-v1",
+  "environment": {
+    "hostname": "DESKTOP-IFQG7PD",
+    "os": "windows",
+    "arch": "x86_64",
+    "cpu_count": 28,
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "git_sha": "8c71a920d0372a74a92d6ad44bf8ca71979bf71a",
+    "timestamp_utc": "unix:1785043175",
+    "stack_note": "docker compose deploy/docker-compose.yml (default published ports; no cgroup limits set by this harness)"
+  },
+  "f2": {
+    "group_create_and_welcome_ms": {
+      "n": 3,
+      "p50_ms": 136.4501,
+      "p95_ms": 163.9465,
+      "p99_ms": 163.9465,
+      "min_ms": 133.28209999999999,
+      "max_ms": 163.9465,
+      "mean_ms": 144.55956666666665
+    },
+    "initiator_create_submit_ms": {
+      "n": 3,
+      "p50_ms": 18.6857,
+      "p95_ms": 38.1191,
+      "p99_ms": 38.1191,
+      "min_ms": 17.8373,
+      "max_ms": 38.1191,
+      "mean_ms": 24.8807
+    },
+    "per_joiner_welcome_join_ms": {
+      "n": 6,
+      "p50_ms": 41.067600000000006,
+      "p95_ms": 44.8877,
+      "p99_ms": 44.8877,
+      "min_ms": 40.3009,
+      "max_ms": 44.8877,
+      "mean_ms": 41.870733333333334
+    },
+    "clients_per_run": 3,
+    "runs": 3
+  },
+  "f4": {
+    "round_trip_ms": {
+      "n": 15,
+      "p50_ms": 8.2811,
+      "p95_ms": 46.0957,
+      "p99_ms": 46.520199999999996,
+      "min_ms": 7.3682,
+      "max_ms": 46.520199999999996,
+      "mean_ms": 16.787326666666665
+    },
+    "sustained_send_throughput_msg_per_s": 286.13416716644764,
+    "sustained_send_count": 50,
+    "sustained_send_wall_ms": 174.7432,
+    "runs": 3
+  },
+  "subscribe": {
+    "concurrent_subscribers": 5,
+    "all_subscribe_ms": {
+      "n": 3,
+      "p50_ms": 8.1183,
+      "p95_ms": 8.1993,
+      "p99_ms": 8.1993,
+      "min_ms": 8.0297,
+      "max_ms": 8.1993,
+      "mean_ms": 8.115766666666666
+    },
+    "fanout_to_last_subscriber_ms": {
+      "n": 3,
+      "p50_ms": 43.183600000000006,
+      "p95_ms": 43.9004,
+      "p99_ms": 43.9004,
+      "min_ms": 41.6639,
+      "max_ms": 43.9004,
+      "mean_ms": 42.91596666666666
+    },
+    "runs": 3
+  },
+  "fetch": {
+    "messages_seeded": 550,
+    "page_limit": 500,
+    "first_page_ms": {
+      "n": 1,
+      "p50_ms": 5.611800000000001,
+      "p95_ms": 5.611800000000001,
+      "p99_ms": 5.611800000000001,
+      "min_ms": 5.611800000000001,
+      "max_ms": 5.611800000000001,
+      "mean_ms": 5.611800000000001
+    },
+    "first_page_count": 500,
+    "first_page_has_more": true,
+    "full_pagination_ms": {
+      "n": 1,
+      "p50_ms": 7.3978,
+      "p95_ms": 7.3978,
+      "p99_ms": 7.3978,
+      "min_ms": 7.3978,
+      "max_ms": 7.3978,
+      "mean_ms": 7.3978
+    },
+    "pages_walked": 2,
+    "runs": 1
+  }
+}
