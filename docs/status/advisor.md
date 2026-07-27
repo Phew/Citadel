@@ -1,64 +1,106 @@
-# Advisor status - shutdown 2026-07-26 (M2: store building, no decisions pending)
+# Advisor status - 2026-07-26 evening (M2: one component left, core lane idle)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
 Verify every agent report against the repo/CI logs before endorsing — this milestone every
 cross-review surfaced something green CI missed.
 
-## FIRST ACTION next session
+## FIRST ACTION this session (2026-07-26, evening)
 
-**Core lane: build the local encrypted client store.** ADR-0007 and Amendment 1 are
-**ACCEPTED** (charge, 2026-07-26, `d302e76`) and both reviews are closed, so nothing gates
-the build. It is the last unbuilt component of M2.
+**Core lane: build the local encrypted client store.** Unchanged from the morning entry, and
+now the oldest idle item in the project. ADR-0007 and Amendment 1 have been **ACCEPTED**
+(charge, 2026-07-26, `d302e76`) with both reviews closed and the ADR header reading "Build may
+start." The runway has been clear for a full session and nothing has been pushed to a `core/`
+branch. It is the last unbuilt component of M2.
 
-Everything else below is either parallel or downstream of it.
+Everything else below is either parallel to it or downstream of it.
 
 ## Resume queue, in order
 
 1. **Core lane: build the store** to the accepted design. Three things land *with* the build,
    not before and not after:
-   - the `deny.toml` `wrappers = ["libsqlite3-sys"]` narrowing, which Amendment 1 §B specified
-     and correctly did not apply while the ADR was PROPOSED. State in the PR body that it is
-     the accepted consequence recorded in §B.3, not a lint fix;
+   - the `deny.toml` `wrappers = ["libsqlite3-sys"]` narrowing on the `openssl-sys` ban at
+     `deny.toml:68`, which Amendment 1 §B specified and correctly did not apply while the ADR
+     was PROPOSED. State in the PR body that it is the accepted consequence recorded in §B.3,
+     not a lint fix. The ban's stated intent at `deny.toml:63` is "TLS is rustls-only"; the
+     narrowing keeps the TLS half and knowingly admits a vendored OpenSSL C codebase into the
+     one process holding plaintext;
    - both notes in `docs/issues/011`, especially **N1**: A.5 asserts the open sequence checks
      extension loading is off without naming a mechanism. Pin a behavioral probe (attempt
      `load_extension()`, require "not authorized") wired into
      `store_release_uses_only_pinned_sqlcipher`. An unnamed assertion is not evidence, and this
-     crate has produced that exact defect four times now;
+     project has produced that exact defect five times now, the fifth being `perf/README.md`
+     (see `#65` below);
    - `docs/status/core.md`, same PR, per rule 2.
-   K3 blocking-reviews it. Also still owed by that lane: the `#39` delta re-review against
-   `33fcfe9`, and a review of `295d829` (the `#49` review may already be done, check).
+   K3 blocking-reviews it. Also still owed by that lane, and older than the store: the `#39`
+   delta re-review against `33fcfe9`, and a review of K3's merged M2 exit-AC harness at
+   `295d829`. Together those are ~1,500 lines and a full service, so they are real work.
 2. **K3: `device_compromise_past_messages_unreadable_fs`**, once the store exposes its
    persisted-state API. This is M2's fifth and final exit criterion. Build it to the criterion
-   **as narrowed** (PLAN §9 M2, ACCEPTED 2026-07-26), not to the old wording.
+   **as narrowed** (PLAN §9 M2, ACCEPTED 2026-07-26), not to the old wording. The core lane's
+   handoff must name which API surface exposes persisted state and how obsolete epoch state is
+   deleted, because that is what the test drives.
 3. **PCS evidence at rung 1.** Grok's spike (`docs/issues/010`, merged `702bbd9`) answered all
    four feasibility questions YES, so the full differential design in ADR-0007 §6 is
    achievable and no fallback rung is needed. Its three residual risks are implementation
    concerns, not feasibility ones; the sharpest is that HPKE info/context label binding for
    UpdatePath open must match RFC 9420 and OpenMLS exactly, which is build work nobody has done.
-4. **Grok: finish PR #65** (perf baselines). NOT merged, see below.
+4. **Grok: fix PR #65's self-diff defect.** NOT merged, see below.
 5. **Integration checkpoint**, then charge declares M2.
 6. ADR-0006 follow-ups A-D remain binding, tracked, not started.
 
-## Open PR at shutdown: #65, and why it is not "done"
+## PR #65: the three completion criteria were met, and a worse defect surfaced
 
-Grok reported the perf harness as done. It is not, and a future session should not read the
-report as completion:
+The morning entry held `#65` on three criteria (fmt green, real tests, one real run with
+`baseline.json` committed). Grok met all three overnight. Verified against source rather than
+taken on report, because the branch was **force-pushed** and the reviewed commit `75ecdb3` is
+no longer reachable from it:
 
-- **CI is red.** `cargo fmt --check` fails at five places in `crates/test-harness/perf/main.rs`.
-  Thirty seconds to fix. The reporting is the part that matters: this repo has hit
-  "reported clean over a red fmt gate" before, and it is why fmt-before-push is a standing rule.
-- **Zero tests.** 746 new lines, no `#[test]` or `#[cfg(test)]` anywhere, in a repo whose
-  PLAN §13 is a testing law. "Done without tests" was stated as a fact rather than argued.
-- **It has never successfully run.** Only its failure path was exercised (stack missing, hard
-  fail, no zeros — which is the correct §13 property). Producing numbers is its entire purpose,
-  so an unrun perf harness is unverified code that will be discovered broken exactly when M3
-  needs a baseline.
+- fmt green, all seven CI jobs SUCCESS on `6f3971a`.
+- `75ecdb3` was 746 lines with zero tests, exactly as recorded. There are now 7 `#[test]`
+  covering percentile edge cases, NaN and negative rejection, and JSON schema round-trip.
+- `baseline.json` is a genuine measurement, not a fabrication. Hostname `DESKTOP-IFQG7PD`,
+  `rustc 1.95.0 (59807616e 2026-04-14)` and `cpu_count 28` all match the host exactly; the
+  embedded timestamp is 44 seconds before the commit; the embedded `git_sha` is its own parent;
+  and 50 messages over 174.7432 ms is 286.134 msg/s to the digit.
 
-**Completion criteria, so this is not relitigated:** fmt green, one real run against a live
-stack (`just dev` then `just perf-baseline`), and the resulting `baseline.json` committed.
-Minor scope note K3 should know rather than discover: it adds a `[[bin]]` to
-`crates/test-harness/Cargo.toml`, which is K3's owned file.
+**Still blocked, on something none of those criteria would have caught.** `justfile:75` passes
+the same path to `--write` and `--diff`. In `perf/main.rs` the write block (line 730) runs
+**before** the diff block (line 738), so every run overwrites `baseline.json` with the current
+report and then compares that report against itself. Every metric prints `+0.0%` forever. It
+has not surfaced yet only because the first run took the "file missing, skip compare" path.
+
+This is worse than the three items it replaced. A missing perf harness is a known gap; a
+harness that reports no regression on every run is a gap that looks like coverage, and M3 is
+exactly when someone will trust it. It is also defect-class instance five: `perf/README.md`
+says "later runs `--diff` against it," which is behavior the code does not have.
+
+**Fix:** read the `--diff` file into memory *before* the write block, then write, then compare
+against the in-memory prior. Keep the single-file workflow; it is the right ergonomics and it
+is what the README documents. Add a test that fails on the ordering, since all seven existing
+tests pass on the broken binary.
+
+**Non-blocking:** `fetch_seed_below_page_limit_is_rejected_by_contract` asserts
+`MESSAGES_PAGE_LIMIT - 1 < MESSAGES_PAGE_LIMIT`, true for every integer, testing nothing.
+Exercise the real guard or delete it. The other six are sound and
+`page_limit_constant_matches_adr0005` is a legitimate spec pin.
+
+**Process note:** force-pushing a PR under open review made the reviewed commit unreachable
+from the branch. It was recoverable only because the SHA was written down here. Fixups on top,
+not history rewrites, while a review is open.
+
+## Position check, 2026-07-26 evening
+
+M0 and M1 closed. **M2 is 4 of 5 exit criteria green**, all four standing CI gates that execute
+on every push: `f2_three_client_dm_creation`, `f4_send_receive_roundtrip`,
+`no_plaintext_scan_delivery_tables`, `pcs_recover_after_update`,
+`adversarial_ds_swapped_keypackage_rejected`. M3 through M8 not started, though M3 now has both
+a perf baseline harness and a churn rig pre-positioned.
+
+Scale: 14,300 lines of Rust across 10 crates, 161 tests, 7 ADRs all ACCEPTED, 6 CI job groups.
+
+`crates/citadel-core/src/` holds nine files and none of them is a store. That absence is the
+entire remaining surface of M2.
 
 ## Day report, 2026-07-26
 
