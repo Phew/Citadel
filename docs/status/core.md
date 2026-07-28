@@ -183,6 +183,49 @@ block in this crate as **unverified code**, regardless of how green the checks l
 step actually ran. Every real defect this milestone was found by a human-style read of code or
 logs, not by CI.
 
+### OPEN AND UNFIXED: `store-evidence` fails on its first-ever run
+
+The `store · native Secret Service backend` job was added by PR #69 and had never executed
+before 2026-07-28. On its first real run it **failed**, and the failure is correct — it is
+rule 4 working, not a broken test.
+
+Run `30325276041`, job `90169795224`. Four tests run; two pass, two fail:
+
+```
+production_store_uses_the_one_fixed_service_identity  ... ok
+secret_service_session_is_diffie_hellman_not_plain    ... ok
+native_backend_roundtrips_and_deletes                 ... FAILED
+the_three_items_do_not_alias_each_other               ... FAILED
+
+panicked at store/credentials/secret_service.rs:195: write: Locked("Secret Service: no result found")
+panicked at store/credentials/secret_service.rs:216: write dek: Locked("Secret Service: no result found")
+```
+
+The split is diagnostic. **The two that pass are the two that never talk to the daemon** — one
+checks the fixed service identity, the other reads the resolved feature graph. **Both that fail
+are the two that actually write to the live Secret Service.**
+
+`Locked("Secret Service: no result found")` on a *write* is the daemon reporting that there is
+no default collection to write into. `gnome-keyring-daemon --unlock --components=secrets` with
+an empty password unlocks an *existing* login keyring; a fresh runner has no keyring database at
+all, so nothing gets created and the default collection never exists. The job provisions the
+daemon but not the collection.
+
+**What this does and does not tell you.** It does **not** show the Linux adapter is wrong — the
+adapter is reporting a genuine backend state, and `classify` mapped it to the right typed error.
+It shows the **job's provisioning step is incomplete**, so ADR-0007 §2's native-backend
+conformance evidence does not yet exist on any platform, including the Linux third this job was
+supposed to cover. Until it is fixed, treat "the credential-store contract is exercised against
+a real backend" as **unproven everywhere**, and read the "no CI job" table above as covering all
+three targets, not two.
+
+**Deliberately not fixed here**, and this is a scope decision, not an oversight: the fix is
+gnome-keyring provisioning in `.github/workflows/ci.yml`, each attempt costs a CI round-trip,
+and CI is K3's owned surface under AGENTS.md. It is also outside the four-item close-out this
+seat was given. The likely shape is creating the default keyring before unlocking it rather than
+assuming one exists — but that is a starting hypothesis, not a verified fix, and it should be
+verified against a real run before anyone writes it down as fact.
+
 ---
 
 ## Open findings against ADR-0007 — `docs/issues/012`
