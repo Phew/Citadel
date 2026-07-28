@@ -168,13 +168,31 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      # An empty password for a throwaway CI keyring. The tests write only under
-      # a per-process service identity, so they cannot touch anything else even
-      # if a runner were reused.
+      # The login keyring must be CREATED on a fresh runner: --unlock reads the
+      # password from stdin and unlocks-or-creates it, but ONLY when the
+      # password is non-empty — read_login_password treats zero bytes on stdin
+      # as "no password" and skips unlock/create entirely (gnome-keyring 46
+      # daemon/gkd-main.c), which left zero collections and failed every write
+      # with ReadAlias("default") → "/" → Locked("no result found") in the
+      # job's first run (30325276041). With a non-empty password the daemon
+      # creates an unlocked login keyring, and the service aliases "default" to
+      # "login" when no default file exists (daemon/dbus/gkd-secret-service.c
+      # update_default). Throwaway password, throwaway runner; the tests write
+      # only under a per-process service identity regardless.
       - name: Native credential-store conformance
         run: |
-          dbus-run-session -- bash -c '
-            echo -n "" | gnome-keyring-daemon --unlock --components=secrets
+          dbus-run-session -- bash -euo pipefail -c '
+            echo -n "citadel-ci" | gnome-keyring-daemon --unlock --components=secrets
+            # Provisioning gate (AGENTS.md rule 4): the default collection must
+            # resolve BEFORE the tests run. If provisioning ever regresses, the
+            # job fails here with a clear message — not inside a test assertion.
+            default=$(busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
+              org.freedesktop.Secret.Service ReadAlias s default | cut -d\" -f2)
+            if [ "$default" = "/" ]; then
+              echo "provisioning failed: no Secret Service collection aliased as default"
+              exit 1
+            fi
+            echo "default collection resolves to $default"
             cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
           '
 
