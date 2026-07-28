@@ -23,7 +23,7 @@ on branch `core/local-encrypted-store`. It is out of draft and awaiting **K3's b
 review**. Four defects found in the ADR during the build are filed as
 `docs/issues/012`; three hold, one is withdrawn with its reasoning kept. The persisted-state
 FS test belongs to K3. The accepted differential PCS oracle is also still unbuilt; issue 014
-corrects the prior milestone count.
+corrects the prior milestone count. **M2 is three of five, not four of five.**
 
 charge subsequently assigned Amendment 2 explicitly. The proposed text is now in ADR-0007;
 it has no force until charge accepts it after K3's blocking review.
@@ -195,7 +195,7 @@ block in this crate as **unverified code**, regardless of how green the checks l
 step actually ran. Every real defect this milestone was found by a human-style read of code or
 logs, not by CI.
 
-### OPEN AND UNFIXED: `store-evidence` fails on its first-ever run
+### RESOLVED: `store-evidence` failed first, then passed with real provisioning
 
 The `store · native Secret Service backend` job was added by PR #69 and had never executed
 before 2026-07-28. On its first real run it **failed**, and the failure is correct — it is
@@ -220,23 +220,25 @@ are the two that actually write to the live Secret Service.**
 `Locked("Secret Service: no result found")` on a *write* is consistent with there being no
 default collection to write into. `gnome-keyring-daemon --unlock --components=secrets` with
 an empty password unlocks an existing login keyring, but the job does not inspect collection
-state directly. The evidence supports an incomplete-provisioning diagnosis; the exact cause
-must be confirmed by K3's CI repair.
+state directly. The failed run supports an incomplete-provisioning diagnosis, but does not by
+itself establish the exact cause.
 
-**What this does and does not tell you.** It does **not** show the Linux adapter is wrong — the
+**What this did and did not tell you.** It did **not** show the Linux adapter was wrong. The
 adapter is reporting a genuine backend state, and `classify` mapped it to the right typed error.
-It shows the **job's provisioning step is incomplete**, so ADR-0007 §2's native credential
-backend conformance evidence does not yet exist on any platform, including the Linux third this
-job was supposed to cover. Until it is fixed, treat "the credential-store contract is exercised
-against a real backend" as **unproven everywhere**, and read the "no CI job" table above as
-covering all three targets, not two.
+It showed the job's provisioning step was incomplete.
 
-**Deliberately not fixed here**, and this is a scope decision, not an oversight: the fix is
-gnome-keyring provisioning in `.github/workflows/ci.yml`, each attempt costs a CI round-trip,
-and CI is K3's owned surface under AGENTS.md. It is also outside the four-item close-out this
-seat was given. The likely shape is creating the default keyring before unlocking it rather than
-assuming one exists — but that is a starting hypothesis, not a verified fix, and it should be
-verified against a real run before anyone writes it down as fact.
+K3 supplied PR #73, commit `5e83396`, which was applied unchanged as
+`b772c0f`. The repair uses a non-empty throwaway keyring password and adds a
+fail-fast `ReadAlias("default")` gate before tests. In
+[run 30329679255](https://github.com/Phew/Citadel/actions/runs/30329679255),
+the gate resolved `/org/freedesktop/secrets/collection/login`, then all four
+credential tests passed. Both live Secret Service tests that failed in the
+first run now pass, and the complete workflow finished successfully. Linux
+therefore has real live native credential backend evidence. The job used the
+default test profile and did not prove the production release graph excludes
+the credential double and unsupported backends or that every returned secret
+owner is zeroizing. The full ADR §Evidence release-conformance count remains
+**zero of three platforms**.
 
 ---
 
@@ -388,12 +390,14 @@ show:
   non-writing tests passed. Both live-write tests failed with
   `Locked("Secret Service: no result found")`. This is consistent with an
   absent default collection, but the job did not inspect collection state.
-- Every job used `ubuntu-latest`. No Windows or macOS job exists. Native
-  credential backend release-CI conformance is therefore zero of three
-  platforms.
+- Every job used `ubuntu-latest`. No Windows or macOS job exists.
 
-This batch does not change `.github/workflows/ci.yml`; that surface belongs to
-K3.
+K3's PR #73 was subsequently applied unchanged as `b772c0f`. The native job in
+[run 30329679255](https://github.com/Phew/Citadel/actions/runs/30329679255)
+resolved the default collection to the login collection and passed all four
+credential tests. The complete run passed. Native credential backend
+execution now has real Linux evidence; the full release-conformance contract
+remains zero of three platforms.
 
 ### Local independent reproduction
 
@@ -452,3 +456,34 @@ writes a `MessageSecretsStore` that retains no past tree when
 epoch. `StoreProvider` borrows the same transaction, so those deletions and the
 Citadel epoch update commit together. Issue 014 gives the full test sequence
 and exact accepted error oracle. This batch does not implement K3's test.
+
+The handoff also has an integration boundary. Every current M2 harness client
+stores MLS state in `EphemeralProvider` and calls `DmGroup` directly. K3 owns
+the harness-side durable client mode because `crates/test-harness` is K3's
+surface: it must drive `LocalStore` through the live transport flow, translate
+typed operation outcomes, and support close, reopen, and snapshot capture
+without exposing `StoreProvider` or duplicating MLS logic. The FS and PCS exit
+criteria must run through that durable mode.
+
+The durable mode must submit the store's persisted pending-transmission bytes
+under their stored idempotency keys. Ordinary messages, Welcomes, and
+already-merged commits are acknowledged only after terminal acceptance.
+Prepared self-updates instead call `confirm_self_update` after acceptance,
+`abort_self_update` after terminal rejection, and neither while the result is
+indeterminate. The current `PendingTransmission` fields cannot distinguish a
+prepared self-update from an already-merged commit, so Core owns a typed
+completion-disposition addition and K3 must not infer the transition. Calling
+the current `DmClient::submit`, which invents a new UUID, would bypass the
+durable outbox contract. The acceptance client must be explicitly durable
+rather than provider-selectable. The forged attacker package fixture may remain
+ephemeral because it is hostile input, not honest client state.
+
+Core owns the store and cryptographic proof surfaces. Core will supply the
+typed pending-completion disposition above, any other missing typed `testing`
+API that K3 identifies, and ADR-0007 §6's
+captured-state differential PCS implementation, including its independent
+oracle. The first already-visible addition is a typed durable membership view,
+so F2 can compare exact member identities without reading provider tables. K3
+owns the harness-level PCS criterion that invokes the Core-owned proof after
+driving the live update. A Core-only unit test is necessary component evidence,
+but it does not satisfy PLAN §9's harness criterion.

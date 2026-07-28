@@ -8,8 +8,9 @@
 
 ## Verdict
 
-**CHANGES.** Four harness tests are useful evidence for the behavior they
-actually run. The fifth, `pcs_recover_after_update`, proves functional
+**CHANGES.** Three of five M2 exit criteria are green. Four harness tests are
+useful evidence for the behavior they actually run, but
+`pcs_recover_after_update` proves functional
 self-update recovery and post-update interoperability, not post-compromise
 security. The status and milestone accounting must not call PCS green.
 
@@ -104,6 +105,64 @@ correct key without vacuum or test-only cleanup; prove a current-epoch positive
 control; then require the old ciphertext to fail with OpenMLS's exact
 `TooDistantInThePast` chain. Retained plaintext history is outside the claim.
 
+## Harness provider gap and ownership
+
+The persisted-state API is necessary but not sufficient. `DmClient` owns an
+`EphemeralProvider`, and its KeyPackage, group, send, and receive methods call
+`DmGroup` directly. Every current M2 harness scenario therefore loses MLS state
+at process exit. Calling `CapturedSnapshot` from one test cannot repair that
+architecture because there is no `LocalStore` state to capture.
+
+K3 owns the harness integration. `crates/test-harness` is K3's surface, so K3
+must add a durable client mode that drives `LocalStore` operations for the live
+F2/F4 transport path, supplies fresh `OperationId` values, translates
+`OperationOutcome` without duplicating MLS logic, and supports close, reopen,
+and snapshot capture. The adapter must drive `LocalStore`; it must not expose
+or retain `StoreProvider`, whose transaction borrow is deliberately internal.
+The existing three green criteria remain evidence for their stated functional
+claims. The remaining FS and PCS criteria must use the durable mode.
+
+The durable mode must transmit from `LocalStore::pending_transmissions`, using
+each row's persisted wire bytes and 16-byte idempotency key. Completion depends
+on how the row was created. Ordinary application messages, Welcomes, and
+already-merged membership commits call `acknowledge_transmission` only after
+terminal transport acceptance. A prepared self-update commit must remain
+pending until that transmission's outcome is accepted or rejected; acceptance
+calls `confirm_self_update`, rejection calls `abort_self_update`, and an
+indeterminate result calls neither. Both self-update methods remove the pending
+row in the same transaction as the MLS transition. The current
+`PendingTransmission` fields do not distinguish a prepared self-update from an
+already-merged commit: both can have `kind == "commit"` and a non-null
+`proposed_epoch`. Core therefore owns a required typed completion-disposition
+field or equivalent query before K3 wires the outbox. K3 must not infer it from
+the current fields.
+
+The current `DmClient::submit` generates a new UUID for each call. Reusing that
+path would persist MLS state while bypassing the store's crash-safe outbox
+contract. The acceptance client should be explicitly durable rather than
+selectable between ephemeral and durable providers, so a later default cannot
+silently move these criteria back to memory.
+
+Core owns the persisted and cryptographic evidence primitives. That includes
+`LocalStore`, the `testing`-gated credential double and profile paths,
+`CapturedSnapshot`/`ReopenedSnapshot`, the exact OpenMLS failure oracle, and any
+additional typed surface the durable harness cannot obtain without reaching
+into store internals. K3 should file a concrete missing-surface request rather
+than reimplementing store or OpenMLS behavior in the harness.
+
+One missing Core surface is already visible: the durable path needs a typed
+membership view so F2 can compare exact member identities, not only epoch and
+member count, without reading provider tables. Core owns that addition. The
+forged attacker KeyPackage fixture may remain ephemeral because it is hostile
+input, not honest client state.
+
+The PCS split follows the same boundary. Core owns implementation of ADR-0007
+§6's captured-state differential proof, including the pinned independent
+oracle and the control-versus-capture result. K3 owns the harness-level exit
+test that runs the live update through the durable client mode and invokes
+that Core-owned proof. Neither the existing store unit test nor a new
+Core-only PCS unit test satisfies PLAN §9 by itself.
+
 ## Decision required from charge
 
 No new decision is needed for the FS test. M2 close must, however, be counted
@@ -111,5 +170,5 @@ from the accepted PCS evidence contract rather than from the current test name.
 
 ## Scope boundaries
 
-This review does not implement K3's FS test, weaken the PCS oracle, or treat
-functional recovery as a secrecy proof.
+This review does not implement K3's durable harness mode or FS test, weaken the
+PCS oracle, or treat functional recovery as a secrecy proof.

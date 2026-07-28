@@ -1217,34 +1217,114 @@ methods that are explicit ledger exceptions.
 #### B.1 KeyPackage generation
 
 `LocalStore::new_key_package` changes provider state but is transactional and
-deliberately unledgered. Every successful invocation returns a newly generated
-KeyPackage and persists its private material in the same transaction.
+deliberately unledgered in the M2 implementation. Every successful invocation
+generates a fresh KeyPackage and commits its private material before returning.
+If the process stops after that commit but before response delivery, the caller
+cannot recover the returned public package and the private material can remain
+in the encrypted store.
 
-This exception is narrow:
+This is a documented M2 exception only. No automatic KeyPackage replenisher or
+reaper may ship against this API. The production lifecycle must satisfy every
+requirement below before automatic replenishment or cleanup is enabled.
 
-- it applies only to KeyPackage generation;
-- replay is not promised and callers must not treat a second invocation as the
-  same package;
-- the current API does not provide crash recovery between commit and response;
-  an unpublished package can therefore leave private material in the encrypted
-  store indefinitely; and
-- this is an M2 limitation, not the intended production pool lifecycle.
+1. Generation has a durable operation identity. One generation operation ID
+   maps to one RFC 9420 `KeyPackageRef`, the exact serialized public
+   KeyPackage, its init-key identity, and its private provider records. While
+   the result payload is retained, a retry of the same operation ID returns the
+   same package. After that payload expires, the same ID returns a typed expired
+   result and never generates fresh material. The compact operation ID,
+   fingerprint, package reference, and terminal state remain until profile
+   destruction. Only a new operation ID generates fresh material.
+2. The canonical package identifier is RFC 9420's `KeyPackageRef`, computed
+   from the exact TLS-encoded KeyPackage. `LocalStore` derives it from the
+   validated generated object and separately records the `cipher_suite` field.
+   It enforces uniqueness of the exact encoded HPKE `init_key` across every
+   KeyPackage created by this device, including live records and local
+   tombstones, without scoping that uniqueness to a cipher suite. The opaque
+   service derives the package reference from the exact submitted bytes under
+   Citadel's pinned v1 cipher suite through a canonical
+   `citadel-proto` encoding helper and the existing SHA-256 facade; it does not
+   hand-roll the reference input or claim to validate or deduplicate init keys.
+   A future multi-cipher-suite pool cannot preserve that opaque derivation and
+   requires a separately accepted protocol and crypto-confinement design.
+3. Before any publication request can leave the process, the client durably
+   records `publish_pending`, including the exact package bytes and a stable
+   publication request ID. A missing or lost publication response leaves the
+   package in `publish_pending`; it never makes the package unpublished or
+   eligible for cleanup.
+4. Publication is idempotent under the device and publication request ID.
+   Repeating a request returns the original per-package result and rejects
+   changed bytes. The service enforces package-reference uniqueness across live
+   rows and retained tombstones. An aggregate pool size is not reconciliation
+   evidence; the response or a linearizable reconciliation operation identifies
+   every package's status.
+5. Before a fetch can leave the requesting device, that device durably records
+   an authenticated request ID and every request field. It retries or reconciles
+   only under that ID until the exact response is durably recorded. The service
+   executes the request idempotently: the first execution atomically selects
+   and marks the exact per-device packages as handed out and stores the complete
+   response. A retry returns those same package bytes; changed request fields
+   conflict. Handed-out and indeterminate packages count against replenishment
+   limits. A lost response therefore cannot burn another package under a new
+   request ID or drive automatic replenishment into unbounded retained private
+   state.
+6. The service distinguishes `available` from `handed_out`. It atomically and
+   irreversibly records `handed_out` before public package bytes can be returned
+   to a fetcher. A lost fetch response does not return the package to
+   `available`. An active, expired, or indeterminate reservation or lease is
+   not deletion evidence. Once bytes might have crossed the service boundary,
+   the package is `handed_out` unless a separately accepted protocol makes
+   lease expiry enforceable at every consumption path.
+7. Server handout is not MLS consumption. MLS consumption occurs only when
+   this device successfully processes a Welcome using that package. The
+   lifecycle transition and removal of its private provider material occur in
+   the same local transaction as the successful join, with a durable terminal
+   tombstone.
+8. A reaper may delete private KeyPackage material only when one of these
+   positive predicates is durably established:
 
-RFC 9420's one-use design and init-key uniqueness requirements do not by
-themselves justify returning fresh material on retry. A durable design must
-also prevent the same public KeyPackage from being published or consumed
-twice. Before the pool is replenished automatically, the follow-up order is:
+   - publication was never attempted: the package is still `generated`, has no
+     publication outbox record, and the before-send rule makes it impossible
+     for public bytes to have left the process;
+   - an atomic service retirement operation serialized against publication and
+     fetch, prevented every future fetch, and returned a per-package result
+     proving the package was never handed out; that result is persisted locally
+     before deletion; or
+   - successful local MLS consumption has already made the private material
+     obsolete in the same transaction.
 
-1. make publication idempotent and enforce uniqueness for the public
-   KeyPackage, including its init-key identity;
-2. give generation a durable operation identity and a staged lifecycle such as
-   generated, published, consumed, expired, or revoked; and
-3. bound cleanup of unpublished entries while retaining terminal tombstones
-   long enough to prevent a late retry from recreating or republishing them.
+   `publish_pending`, `published`, `available`, `leased`, `handed_out`, an
+   indeterminate network result, elapsed wall-clock time, and pool age are all
+   deletion blockers. Failure to contact or reconcile with the service
+   preserves the private material.
+9. A fetched or possibly fetched package that never reaches successful local
+   consumption remains retained. Bounded cleanup of that state requires a
+   separate accepted design with a cryptographically bound use deadline
+   enforced by every Welcome submission and join path. Lease expiry, local age,
+   or a server assertion alone is not such a deadline.
+10. Local tombstones retain the generation operation ID, publication request
+    ID, package reference, exact init key, and terminal fingerprint until local
+    profile destruction. Service tombstones retain the publication request ID,
+    fetch request ID, package reference, and terminal state. The service has no
+    init-key identity and does not infer local profile destruction. It may
+    remove its tombstones only through an authenticated service-side device
+    retirement protocol that first revokes future device requests, serializes
+    against publication and fetch, and returns a durable retirement
+    acknowledgment. Result payloads may expire after the complete KeyPackage
+    validity and retry horizon, but the compact tombstones do not expire before
+    those explicit local and service terminal events. A late retry must never
+    recreate, republish, reissue, or consume the package twice.
 
-Until that lifecycle lands, the accepted operation-ledger guarantee must be
-read as excluding `new_key_package`. This amendment neither permits
-KeyPackage reuse nor claims that the current orphan behavior is best practice.
+Until this lifecycle is implemented and independently tested, the accepted
+operation-ledger guarantee excludes `new_key_package`, orphan cleanup remains
+disabled, and no claim is made that the current behavior is production pool
+management.
+
+The current `new_key_package` source comment explains the M2 choice by claiming
+that replay must generate fresh material. That production premise is
+superseded by the lifecycle above: generation replay is safe only when
+publication and fetch are also idempotent. This proposed, doc-only amendment
+does not alter source before charge accepts the correction.
 
 #### B.2 Pending-transmission acknowledgment
 
@@ -1318,27 +1398,41 @@ so existing content is preserved. Citadel neither reads nor trusts that
 content. Mutual exclusion and containment come from the file lock and
 handle-based validation only.
 
-### G. Native credential backend conformance evidence currently covers zero platforms
+### G. Live native credential backend evidence covers Linux; full release conformance covers zero platforms
 
-Section 2 requires release-CI evidence on Windows, macOS, and Linux. As of
-2026-07-27 every repository CI job runs on `ubuntu-latest`; there are no
-Windows or macOS jobs. In
-[run 30325896448](https://github.com/Phew/Citadel/actions/runs/30325896448),
+Section 2 requires release-CI evidence on Windows, macOS, and Linux. Every
+repository CI job still runs on `ubuntu-latest`; there are no Windows or macOS
+jobs. In
+[run 30325276041](https://github.com/Phew/Citadel/actions/runs/30325276041),
 the first Linux native credential backend job ran four credential tests: the
 two tests that do not write to Secret Service passed, while both live write
 tests failed with `Locked("Secret Service: no result found")`.
 The result is consistent with the fresh runner having no default collection
 for `gnome-keyring-daemon --unlock` to unlock. The job did not inspect the
 daemon's collection state directly, so the exact provisioning cause remains
-to be confirmed by K3's CI repair.
+unproven by that failed run alone.
 
-That failure is provisioning evidence, not evidence that the Linux adapter is
-wrong. A local Windows terminal run was reported passing the native Credential
+K3's `b772c0f` repair supplied a non-empty throwaway keyring password and added
+a fail-fast `ReadAlias("default")` gate. In
+[run 30329679255](https://github.com/Phew/Citadel/actions/runs/30329679255),
+the gate resolved
+`/org/freedesktop/secrets/collection/login`, then all four credential tests
+passed, including both live Secret Service tests, and the complete workflow
+finished successfully. That is new live Linux native credential backend
+evidence.
+
+A local Windows terminal run was reported passing the native Credential
 Manager round-trip tests, but its output was not committed or published and it
-is not the required release matrix. Therefore the conformance count is
-**zero of three platforms**. This amendment does not weaken the three-platform
-requirement, treat a local run as CI, or mark the criterion complete. CI
-provisioning and the release matrix remain open.
+is not the required release matrix. Run 30329679255 also used the default test
+profile; it did not prove the production release graph excludes the credential
+double and unsupported backends, or that all returned secret owners are
+zeroizing types. Therefore live native credential backend execution covers
+Linux, but the
+full `store_release_uses_only_the_target_native_credential_backend` contract
+still covers **zero of three platforms**. This amendment does not weaken the
+three-platform requirement, treat a local run as CI, or mark the criterion
+complete. The production release-conformance jobs remain open on all three
+targets.
 
 ## Primary sources
 
