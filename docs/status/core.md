@@ -1,4 +1,4 @@
-# Core lane status — M2: the local encrypted client store is built, one exit criterion left
+# Core lane status — M2: the store is built; FS and PCS evidence remain
 
 **Lane:** security core. **Branch prefix:** `core/<task>` (`sol/` and `opus/` are retired;
 they survive in merged history only — do not cut new branches under either).
@@ -20,12 +20,12 @@ ADR-0007 (local encrypted client store) was designed, independently reviewed by 
 once, and ACCEPTED by charge on 2026-07-26 (`d302e76`). The store was then built against the
 accepted design and is **PR #69** on branch `core/local-encrypted-store`. It is out of draft and
 awaiting **K3's blocking review**. Four defects found in the ADR during the build are filed as
-`docs/issues/012`; three hold, one is withdrawn with its reasoning kept. M2 has one exit
-criterion left and it belongs to K3, not to this lane.
+`docs/issues/012`; three hold, one is withdrawn with its reasoning kept. The persisted-state
+FS test belongs to K3. The accepted differential PCS oracle is also still unbuilt; issue 014
+corrects the prior milestone count.
 
-**Do not start ADR-0007 Amendment 2.** That is charge's explicit instruction as of 2026-07-27.
-`docs/issues/012` records what an Amendment 2 would need to cover; it is not authorization to
-write one.
+charge subsequently assigned Amendment 2 explicitly. The proposed text is now in ADR-0007;
+it has no force until charge accepts it after K3's blocking review.
 
 ---
 
@@ -263,20 +263,16 @@ Plus two smaller findings carried in the same file: `cipher_memory_security` mus
 
 1. **Get PR #69 through K3's blocking review.** It is out of draft. This lane does not
    self-merge and never self-reviews.
-2. **The two inherited review debts.** Older than the store, owed by this seat, blocking
-   nothing. **They are not small** — an earlier characterisation of them as "small" was wrong.
-   `#49` is roughly 1,500 lines across `dm.rs`, `dishonest.rs` and `m2_dm.rs`; `#39` is a full
-   service plus migrations and DB tests. Recommended order is `#49` first, because the
-   adversarial test and the live KT verifier most need a second reader. `#39`'s delta re-review
-   is against `33fcfe9` and is the outstanding half of a pair K3 already completed on its side.
+2. **Close the two inherited review findings.** The reviews are complete in issues 013 and
+   014. Issue 013 requires an ADR-0005 lifecycle correction plus ordinary hardening. Issue 014
+   blocks M2 close because recovery/convergence was mislabeled as PCS evidence.
 3. **`docs/issues/012` DEFECT 2** needs a decision from charge before M3 — it interacts with the
    M1 KeyPackage pool and the M5 multi-device work.
 4. **Integration checkpoint**, then charge declares M2. Being unblocked is not being in scope.
 
-**Deferred by design — do not start without explicit direction from charge:** ADR-0007
-Amendment 2; M3 commit ordering and F7 (the integration checkpoint gates it); the
-device-transparency `KtLeaf` proto work (ADR-0004's named residual); ADR-0006 follow-ups A
-through D.
+**Deferred by design — do not start without explicit direction from charge:** M3 commit
+ordering and F7 (the integration checkpoint gates it); the device-transparency `KtLeaf` proto
+work (ADR-0004's named residual); ADR-0006 follow-ups A through D.
 
 ---
 
@@ -351,3 +347,84 @@ Amendment 1, the store build (PR #69), and `docs/issues/011` and `012`.
   Git's msys Perl fails at `Configure` on a missing `Locale::Maketext::Simple`. A portable
   Strawberry Perl plus `OPENSSL_SRC_PERL` works. CI is Linux and needs none of that, but it does
   need `libdbus-1-dev`, which the compiling jobs install explicitly.
+
+---
+
+## SESSION 6 (2026-07-27) — independent verification, Amendment 2, and inherited reviews
+
+The core seat independently verified PR #69 at `d370384`; the handover note was
+not treated as evidence.
+
+### What the latest pull-request run actually executed
+
+GitHub Actions run `30325896448` tested the merge of `d370384` into its then
+base. The logs, not the check badges, show:
+
+- Rust ran `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --locked -- -D warnings`, and
+  `cargo test --workspace --locked`; all passed on Linux.
+- The real compose job ran all five named M2 harness tests and they passed.
+  This does not cure issue 014's PCS-oracle finding: a green test proves only
+  the assertions it contains.
+- The canary injected 16 values, scanned 13 tables, 27 rows, and 80 log lines,
+  found both controls, and reported no service-data violations.
+- `cargo audit`, `cargo deny check`, crypto confinement, and migration
+  immutability checks passed. Audit reported only the two repository-allowed
+  unmaintained advisories.
+- The native Secret Service job ran exactly four credential tests. The two
+  non-writing tests passed. Both live-write tests failed with
+  `Locked("Secret Service: no result found")`. The provisioning command tried
+  to unlock a login keyring that a fresh runner did not have.
+- Every job used `ubuntu-latest`. No Windows or macOS job exists. Native
+  credential-backend release-CI conformance is therefore zero of three
+  platforms.
+
+The core lane did not change `.github/workflows/ci.yml`; that surface belongs
+to K3.
+
+### Local independent reproduction
+
+On Windows with Rust 1.95.0 and about 49.6 GB free before the build:
+
+- `cargo fmt --all -- --check` passed;
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` passed;
+- `cargo test --workspace --locked` passed, including 72 `citadel-core` tests
+  and the live Windows Credential Manager round-trip/delete cases;
+- `cargo audit` and `cargo deny check` passed with the same two allowed
+  unmaintained warnings;
+- `cargo metadata --locked`, crypto confinement, and the migration checker
+  against base `113b875` passed; and
+- the worktree remained clean after the build.
+
+The Windows credential result is useful independent local evidence. It is not
+a substitute for the committed three-platform release matrix.
+
+### Amendment and review outputs
+
+- ADR-0007 Amendment 2 is **PROPOSED**, not accepted. It covers all of issue
+  012, keeps one incoming raw-wire ledger domain on the correct rationale, and
+  records the zero-platform CI state without weakening the requirement.
+- `docs/issues/013-pr-39-delta-review.md` is the overdue review of `33fcfe9`.
+  Its principal finding is that the safer Subscribe-based Welcome
+  acknowledgment changed accepted ADR-0005 behavior without updating the ADR.
+- `docs/issues/014-m2-exit-ac-review.md` is the review of `295d829`. The
+  current `pcs_recover_after_update` test is a recovery/convergence test, not a
+  PCS proof. ADR-0007's accepted differential oracle remains unbuilt, so M2
+  cannot honestly be counted as four of five exit criteria green.
+
+### Persisted-state handoff to K3
+
+The exact test surface is
+`citadel_core::store::evidence::{CapturedSnapshot, ReopenedSnapshot}`, compiled
+through the `testing` feature that `crates/test-harness` already enables.
+`CapturedSnapshot::capture` copies the encrypted database and present sidecars
+with the correct key; `reopen`, `group_epoch`, `max_past_epochs`, and
+`try_process_message` drive the production provider path against the copy.
+
+Drive the transition through `LocalStore::receive` for a peer commit or
+`prepare_self_update` plus `confirm_self_update` for a local commit. OpenMLS
+writes a `MessageSecretsStore` that retains no past tree when
+`max_past_epochs = 0` and calls `delete_previous_epoch_keypairs` for the prior
+epoch. `StoreProvider` borrows the same transaction, so those deletions and the
+Citadel epoch update commit together. Issue 014 gives the full test sequence
+and exact accepted error oracle. The core lane did not write K3's test.

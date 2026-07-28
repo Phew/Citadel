@@ -9,6 +9,8 @@
   tracked in `docs/issues/011-adr-0007-non-blocking-notes.md`. Both landed with the store
   build and are folded into Amendment 1 §A.5 and §A.7; the issue is CLOSED.
 - **Date:** 2026-07-24 (body); 2026-07-26 (Amendment 1)
+- **Amendment 2:** **PROPOSED** (core lane, 2026-07-27). It has no force
+  unless charge accepts it after K3's blocking review.
 - **Deciders:** charge (required for ACCEPTED); independent design review: K3
   **complete — CHANGES**, `docs/issues/009-adr-0007-store-design-review.md`
   (merged `9ca9317`). Its two blocking findings are folded as Amendment 1 below.
@@ -1169,8 +1171,145 @@ substance of what was accepted, stated plainly so a later reader is not misled:
 This is a user-facing property claim, so it is also stated in the README's security
 posture, not only here.
 
+## Amendment 2 (PROPOSED): corrections from the store build
+
+This amendment records what the build disproved in the accepted text. It does
+not accept itself, change an acceptance criterion, or waive missing evidence.
+`docs/issues/012-adr-0007-build-findings.md` preserves the source-level
+investigation. If charge does not accept this amendment, the accepted body
+remains controlling and the implementation divergences remain open.
+
+### A. Persisted past-epoch configuration is checked through its stored representation
+
+Section 6's fail-closed requirement stands, but its assumed OpenMLS API does
+not exist. In openmls 0.8.1, `MlsGroup::configuration()` returns
+`&MlsGroupJoinConfig`; that type's `max_past_epochs` field is private and it has
+no public getter. The similarly named public getter belongs to
+`MlsGroupCreateConfig`.
+
+The required check therefore serializes the loaded join configuration with the
+pinned codec and reads `max_past_epochs` from that representation. This is the
+representation persisted in the provider's `join_group_config` row. Missing,
+renamed, malformed, non-integral, or out-of-range data is not zero and fails
+closed. A non-zero value fails with `PastEpochRetentionRejected`; an unreadable
+value fails with `PastEpochRetentionUnreadable`.
+
+This replaces only the accessor premise. The explicit zero pin, the
+post-restart assertion, and the requirement to reject widened persisted state
+are unchanged.
+
+### B. KeyPackage generation is a temporary exception to the operation ledger
+
+Section 5's statement that every state-changing public operation requires an
+`OperationId` was too broad. `LocalStore::new_key_package` changes provider
+state but is transactional and deliberately unledgered in the M2 build. Every
+successful invocation returns a newly generated KeyPackage and persists its
+private material in the same transaction.
+
+The exception is narrow:
+
+- it applies only to KeyPackage generation;
+- replay is not promised and callers must not treat a second invocation as the
+  same package;
+- the current API does not provide crash recovery between commit and response;
+  an unpublished package can therefore leave private material in the encrypted
+  store indefinitely; and
+- this is an M2 limitation, not the intended production pool lifecycle.
+
+RFC 9420's single-use rule does not by itself justify returning fresh material
+on retry. A durable design must also prevent the same public KeyPackage from
+being published or consumed twice. Before the pool is replenished
+automatically, the follow-up order is:
+
+1. make publication idempotent and enforce uniqueness for the public
+   KeyPackage, including its init-key identity;
+2. give generation a durable operation identity and a staged lifecycle such as
+   generated, published, consumed, expired, or revoked; and
+3. bound cleanup of unpublished entries while retaining terminal tombstones
+   long enough to prevent a late retry from recreating or republishing them.
+
+Until that lifecycle lands, the accepted operation-ledger guarantee must be
+read as excluding `new_key_package`. This amendment neither permits
+KeyPackage reuse nor claims that the current orphan behavior is best practice.
+
+### C. Windows path containment has a residual race
+
+Section 2 overstated a cross-platform guarantee. The
+`SQLITE_OPEN_NOFOLLOW` behavior cited in this repository is in
+`libsqlite3-sys` 0.30.1's `sqlcipher/sqlite3.c`, the amalgamation Citadel
+actually compiles. That flag is effective through the Unix VFS and inert
+through the Windows VFS.
+
+The profile lock is opened with reparse-point traversal disabled and is
+revalidated through its open handle. Its containment check is therefore tied
+to the locked object. The database, staging file, rollback journals, and other
+sidecars are validated by path before open. Lock-first ordering narrows the
+window, but a same-user attacker able to rename or replace those paths can race
+validation and open on Windows. M2 does not close that TOCTOU window.
+
+If accepted, this is an explicit residual limitation, not a claim that path
+validation is race-free. Closing it requires a handle-relative or
+identity-revalidated database-open design and separate review.
+
+### D. Incoming application messages and commits share one ledger domain
+
+The build finding that motivated a split was withdrawn. RFC 9420 places
+`content_type` in cleartext in `PrivateMessage`, and OpenMLS exposes it before
+decryption through `MlsMessageIn::try_into_protocol_message()` and
+`ProtocolMessage::content_type()`.
+
+The M2 implementation nevertheless keeps one incoming-wire operation domain.
+Its fingerprint covers the group identifier and the complete raw wire bytes,
+so an identical retry has the same identity whether it later yields an
+application message or a commit. Parsing once inside the store transaction
+also avoids a caller-side parse followed by an actor-side parse that could
+disagree. The outcome remains tagged as received application or merged commit.
+
+This replaces Section 5's two incoming atomic-unit labels with one semantic
+unit: process one incoming MLS wire message. The current
+`ReceiveApplication`/`receive_application` discriminator is a legacy label for
+that shared domain, not a claim that every input is application content. Its
+source comment must use the raw-wire rationale above rather than the withdrawn
+"caller cannot know" premise.
+
+### E. SQLCipher pragma order and result type are normative
+
+`PRAGMA cipher_memory_security = ON` must run before `PRAGMA key`, because
+keying allocates the codec state whose allocator policy the readback reports.
+The readback is SQL text, not an integer column. The hardened open sequence
+must read the text, parse it strictly, and require `1`; changing either the
+order or the result type makes a correctly configured store fail its startup
+check.
+
+### F. Lock content is not an invariant
+
+Section 2's statement that lock content is empty applies only to a lock file
+Citadel created. Existing lock files are opened read-write without truncation,
+so existing content is preserved. Citadel neither reads nor trusts that
+content. Mutual exclusion and containment come from the file lock and
+handle-based validation only.
+
+### G. Native credential-backend conformance evidence currently covers zero platforms
+
+Section 2 requires release-CI evidence on Windows, macOS, and Linux. As of
+2026-07-27 every repository CI job runs on `ubuntu-latest`; there are no
+Windows or macOS jobs. The first Linux native-backend job ran four credential
+tests: the two tests that do not write to Secret Service passed, while both
+live write tests failed with `Locked("Secret Service: no result found")`.
+The fresh runner had no login collection for `gnome-keyring-daemon --unlock`
+to unlock.
+
+That failure is provisioning evidence, not evidence that the Linux adapter is
+wrong. A local Windows run passed the native Credential Manager round-trip
+tests, but local evidence is not the required committed release matrix.
+Therefore the conformance count is **zero of three platforms**. This amendment
+does not weaken the three-platform requirement, treat a local run as CI, or
+mark the criterion complete. CI provisioning and the release matrix remain
+open.
+
 ## Primary sources
 
+- [RFC 9420: The Messaging Layer Security Protocol](https://www.rfc-editor.org/rfc/rfc9420.html)
 - [OpenMLS SQLite storage provider 0.2.0 API](https://docs.rs/openmls_sqlite_storage/0.2.0/openmls_sqlite_storage/struct.SqliteStorageProvider.html)
 - [rusqlite 0.32.1 transaction API](https://docs.rs/rusqlite/0.32.1/rusqlite/struct.Transaction.html)
 - [serde_json 1.0.150 API](https://docs.rs/serde_json/1.0.150/serde_json/)
