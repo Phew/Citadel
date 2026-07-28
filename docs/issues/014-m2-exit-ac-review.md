@@ -1,6 +1,6 @@
 # 014: M2 exit acceptance-harness review
 
-- **Reporter:** core lane
+- **Reporter:** security review
 - **Date:** 2026-07-27
 - **Blocks:** M2 close
 - **Related:** commit `295d829`, ADR-0005 Evidence, ADR-0007 §6,
@@ -25,8 +25,10 @@ must persist and restart, extract the relevant pre-update private state, parse
 the UpdatePath, and attempt every applicable ciphertext through the pinned
 `mls-spec`/AWS-LC differential oracle
 (`docs/decisions/0007-local-encrypted-client-store.md:782-789`).
-`docs/issues/010` records that the selected full oracle is feasible and that
-PCS evidence and M2 close are blocked if it is not implemented.
+`docs/issues/010` records a preliminary throwaway API/dependency probe and
+selects the full oracle as the intended rung. The probe was deleted and is not
+committed evidence. The accepted ADR still requires the full implementation
+and says PCS evidence and M2 close are blocked without it.
 
 The merged test (`crates/test-harness/tests/m2_dm.rs:395`) does none of those
 things. It sends a baseline, performs a self-update, merges the commit on all
@@ -102,12 +104,12 @@ correct key without vacuum or test-only cleanup; prove a current-epoch positive
 control; then require the old ciphertext to fail with OpenMLS's exact
 `TooDistantInThePast` chain. Retained plaintext history is outside the claim.
 
-## What I need from charge
+## Decision required from charge
 
 No new decision is needed for the FS test. M2 close must, however, be counted
 from the accepted PCS evidence contract rather than from the current test name.
 
-## Non-goals / what I will not improvise
+## Scope boundaries
 
 This review does not implement K3's FS test, weaken the PCS oracle, or treat
 functional recovery as a secrecy proof.

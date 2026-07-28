@@ -1,4 +1,4 @@
-# Core lane status — M2: the store is built; FS and PCS evidence remain
+# Core lane status: the M2 store is built; FS and PCS evidence remain
 
 **Lane:** security core. **Branch prefix:** `core/<task>` (`sol/` and `opus/` are retired;
 they survive in merged history only — do not cut new branches under either).
@@ -18,8 +18,9 @@ roster table is the only place one belongs.
 
 ADR-0007 (local encrypted client store) was designed, independently reviewed by K3, amended
 once, and ACCEPTED by charge on 2026-07-26 (`d302e76`). The store was then built against the
-accepted design and is **PR #69** on branch `core/local-encrypted-store`. It is out of draft and
-awaiting **K3's blocking review**. Four defects found in the ADR during the build are filed as
+accepted design, with the build-time divergences now proposed as Amendment 2, and is **PR #69**
+on branch `core/local-encrypted-store`. It is out of draft and awaiting **K3's blocking
+review**. Four defects found in the ADR during the build are filed as
 `docs/issues/012`; three hold, one is withdrawn with its reasoning kept. The persisted-state
 FS test belongs to K3. The accepted differential PCS oracle is also still unbuilt; issue 014
 corrects the prior milestone count.
@@ -57,27 +58,37 @@ store, and `store::StoreProvider` over a keyed SQLCipher connection for everythi
 - `LocalStore::open(ProfilePaths, Arc<dyn CredentialStore>)`, plus `close()` and `destroy()`.
   `ProfilePaths::at_root` is `testing`-gated so a test can put a profile in a tempdir;
   production has no way to relocate one out of the platform application-data directory.
-- Every state-changing call takes a caller-generated `OperationId` and returns an
-  `OperationOutcome`: `create_group`, `new_key_package`, `join_from_welcome`, `add_members`,
-  `send`, `receive`, `prepare_self_update`, `confirm_self_update`, `abort_self_update`,
-  `accept_kt_head`. Retrying the same ID with the same fingerprint returns the stored outcome
-  without reapplying.
-- Reads: `conversations`, `messages`, `pending_transmissions`, `acknowledge_transmission`,
-  `kt_checkpoint`, `group_epoch`, `operation_high_water`, `verify_integrity`.
+- Profile lifecycle follows the startup, close, and destruction contracts in ADR-0007 §§2
+  and 6, not the operation ledger.
+- Ledgered state-changing calls take a caller-generated `OperationId` and return an
+  `OperationOutcome`: `create_group`, `join_from_welcome`, `add_members`, `send`, `receive`,
+  `prepare_self_update`, `confirm_self_update`, `abort_self_update`, and `accept_kt_head`.
+  Retrying the same ID with the same fingerprint returns the stored outcome without
+  reapplying.
+- Two state-changing calls are transactional but unledgered:
+  `new_key_package`, whose crash-recovery limitation is proposed in Amendment 2 §B.1, and
+  `acknowledge_transmission`, a naturally idempotent delete keyed by the pending
+  transmission's existing 16-byte idempotency key (§B.2).
+- Reads: `conversations`, `messages`, `pending_transmissions`, `kt_checkpoint`,
+  `group_epoch`, `operation_high_water`, and `verify_integrity`.
 - Evidence surface (`testing` feature): `LocalStore::paths()` enumerates every file the profile
   owns; `database_encryption_key_for_evidence()` returns the correct key;
   `evidence::CapturedSnapshot::capture_files(&paths, key, into)` copies the live set with **no**
   cleanup step; `has_live_rollback_journal()` reports snapshot eligibility; `reopen()` keys the
   copy through the production open sequence; `ReopenedSnapshot::try_process_message` drives the
   real OpenMLS path **bypassing application deduplication**, handing back OpenMLS's own typed
-  error, which is what makes an exact-chain assertion possible. `max_past_epochs()` returns
-  `Option<usize>`, and `None` must be treated as a failure, never as zero.
+  error, which is what makes an exact-chain assertion possible. A persisted field that cannot
+  be extracted is rejected during `DmGroup::load` as
+  `StoreError::Group(GroupError::PastEpochRetentionUnreadable)`. A nonzero value is rejected as
+  `StoreError::Group(GroupError::PastEpochRetentionRejected(value))`. The evidence accessor
+  returns `Option<usize>` only after a valid group has loaded; it cannot expose either rejected
+  case as `Ok(None)`.
 
 **How obsolete epoch state is deleted**, since that is the other half of what the test drives:
 Citadel does not delete it. OpenMLS does, through its storage trait, in the same transaction
 that persists the new state, because `max_past_epochs` is pinned to 0. The sequence is
-`prepare_self_update` then `confirm_self_update` returning success — which on a live filesystem
-has already removed the rollback journal — and only then is a snapshot eligible. There is no
+`prepare_self_update` then `confirm_self_update` returning success, which on a live filesystem
+has already removed the rollback journal, and only then is a snapshot eligible. There is no
 checkpoint call, no vacuum, and no test-only cleanup, deliberately.
 
 **Named tests that prove compliance**, all in `crates/citadel-core/src/store/tests.rs` against
@@ -111,13 +122,14 @@ and this file.
 Stated here and at the top of `store/tests.rs` rather than left to be discovered.
 
 - **The three-desktop-target release build.** Never run. See the CI platform section below.
-- **The per-OS native-backend conformance run.** ADR-0007 §2 wants one runner per desktop
-  target; only the Linux third exists (`store-evidence`).
+- **The per-OS native credential backend conformance run.** ADR-0007 §2 wants one runner per
+  desktop target; only the Linux third exists (`store-evidence`).
 - **The native manifest / SBOM / pinned-scanner job** of Amendment 1 §A.3.
-- **The `mls-rs` / `mls-spec` / AWS-LC PCS differential oracle** (ADR-0007 §6). Grok's
-  feasibility spike (`docs/issues/010`, merged `702bbd9`) answered all four questions YES, so
-  this is buildable and needs no fallback rung. Nobody has built it. Its sharpest residual risk:
-  HPKE info/context label binding for UpdatePath open must match RFC 9420 and OpenMLS exactly.
+- **The `mls-rs` / `mls-spec` / AWS-LC PCS differential oracle** (ADR-0007 §6).
+  `docs/issues/010` records a preliminary throwaway API/dependency probe and the selected full
+  rung, but the probe was deleted and is not reproducible committed evidence. Nobody has built
+  the oracle. Its sharpest residual risk is that HPKE info/context label binding for UpdatePath
+  open must match RFC 9420 and OpenMLS exactly.
 - **The three-target latency benchmark.**
 - **`device_compromise_past_messages_unreadable_fs`** — the fifth M2 exit criterion. **This is
   K3's, not this lane's.** Do not close it with a placeholder; a vacuous green test is worse
@@ -205,19 +217,19 @@ The split is diagnostic. **The two that pass are the two that never talk to the 
 checks the fixed service identity, the other reads the resolved feature graph. **Both that fail
 are the two that actually write to the live Secret Service.**
 
-`Locked("Secret Service: no result found")` on a *write* is the daemon reporting that there is
-no default collection to write into. `gnome-keyring-daemon --unlock --components=secrets` with
-an empty password unlocks an *existing* login keyring; a fresh runner has no keyring database at
-all, so nothing gets created and the default collection never exists. The job provisions the
-daemon but not the collection.
+`Locked("Secret Service: no result found")` on a *write* is consistent with there being no
+default collection to write into. `gnome-keyring-daemon --unlock --components=secrets` with
+an empty password unlocks an existing login keyring, but the job does not inspect collection
+state directly. The evidence supports an incomplete-provisioning diagnosis; the exact cause
+must be confirmed by K3's CI repair.
 
 **What this does and does not tell you.** It does **not** show the Linux adapter is wrong — the
 adapter is reporting a genuine backend state, and `classify` mapped it to the right typed error.
-It shows the **job's provisioning step is incomplete**, so ADR-0007 §2's native-backend
-conformance evidence does not yet exist on any platform, including the Linux third this job was
-supposed to cover. Until it is fixed, treat "the credential-store contract is exercised against
-a real backend" as **unproven everywhere**, and read the "no CI job" table above as covering all
-three targets, not two.
+It shows the **job's provisioning step is incomplete**, so ADR-0007 §2's native credential
+backend conformance evidence does not yet exist on any platform, including the Linux third this
+job was supposed to cover. Until it is fixed, treat "the credential-store contract is exercised
+against a real backend" as **unproven everywhere**, and read the "no CI job" table above as
+covering all three targets, not two.
 
 **Deliberately not fixed here**, and this is a scope decision, not an oversight: the fix is
 gnome-keyring provisioning in `.github/workflows/ci.yml`, each attempt costs a CI round-trip,
@@ -270,7 +282,7 @@ Plus two smaller findings carried in the same file: `cipher_memory_security` mus
    M1 KeyPackage pool and the M5 multi-device work.
 4. **Integration checkpoint**, then charge declares M2. Being unblocked is not being in scope.
 
-**Deferred by design — do not start without explicit direction from charge:** M3 commit
+**Deferred by design. Do not start without explicit direction from charge:** M3 commit
 ordering and F7 (the integration checkpoint gates it); the device-transparency `KtLeaf` proto
 work (ADR-0004's named residual); ADR-0006 follow-ups A through D.
 
@@ -350,15 +362,16 @@ Amendment 1, the store build (PR #69), and `docs/issues/011` and `012`.
 
 ---
 
-## SESSION 6 (2026-07-27) — independent verification, Amendment 2, and inherited reviews
+## 2026-07-27 verification, Amendment 2, and inherited reviews
 
-The core seat independently verified PR #69 at `d370384`; the handover note was
-not treated as evidence.
+PR #69 at `d370384` was verified independently; the handover note was not
+treated as evidence.
 
 ### What the latest pull-request run actually executed
 
-GitHub Actions run `30325896448` tested the merge of `d370384` into its then
-base. The logs, not the check badges, show:
+[GitHub Actions run 30325896448](https://github.com/Phew/Citadel/actions/runs/30325896448)
+tested the merge of `d370384` into its then base. The logs, not the check badges,
+show:
 
 - Rust ran `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets --locked -- -D warnings`, and
@@ -373,37 +386,48 @@ base. The logs, not the check badges, show:
   unmaintained advisories.
 - The native Secret Service job ran exactly four credential tests. The two
   non-writing tests passed. Both live-write tests failed with
-  `Locked("Secret Service: no result found")`. The provisioning command tried
-  to unlock a login keyring that a fresh runner did not have.
+  `Locked("Secret Service: no result found")`. This is consistent with an
+  absent default collection, but the job did not inspect collection state.
 - Every job used `ubuntu-latest`. No Windows or macOS job exists. Native
-  credential-backend release-CI conformance is therefore zero of three
+  credential backend release-CI conformance is therefore zero of three
   platforms.
 
-The core lane did not change `.github/workflows/ci.yml`; that surface belongs
-to K3.
+This batch does not change `.github/workflows/ci.yml`; that surface belongs to
+K3.
 
 ### Local independent reproduction
 
-On Windows with Rust 1.95.0 and about 49.6 GB free before the build:
+The following commands returned success in a local Windows terminal with Rust
+1.95.0 and about 49.6 GB free before the build:
 
 - `cargo fmt --all -- --check` passed;
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` passed;
-- `cargo test --workspace --locked` passed, including 72 `citadel-core` tests
-  and the live Windows Credential Manager round-trip/delete cases;
+- `cargo test --workspace --locked`, including the live Windows Credential
+  Manager round-trip/delete cases;
 - `cargo audit` and `cargo deny check` passed with the same two allowed
   unmaintained warnings;
 - `cargo metadata --locked`, crypto confinement, and the migration checker
   against base `113b875` passed; and
-- the worktree remained clean after the build.
+- `git status` reported no changes after the build.
 
-The Windows credential result is useful independent local evidence. It is not
-a substitute for the committed three-platform release matrix.
+The terminal output was not committed or published, so this is an operator
+report with exact rerun commands, not durable conformance evidence. It is not a
+substitute for the committed three-platform release matrix.
 
 ### Amendment and review outputs
 
 - ADR-0007 Amendment 2 is **PROPOSED**, not accepted. It covers all of issue
-  012, keeps one incoming raw-wire ledger domain on the correct rationale, and
-  records the zero-platform CI state without weakening the requirement.
+  012, corrects the additional acknowledgment-ledger exception, keeps one
+  incoming MLS wire-message ledger domain on the correct rationale, and records
+  the zero-platform CI state without weakening the requirement. The amendment
+  specifies the correct wire-message rationale, but `actor.rs` still contains
+  the withdrawn "caller cannot know" source comment; changing it is outside
+  this doc-only batch.
+- Two additional code-only cleanups remain outside this batch:
+  `evidence.rs` still documents `max_past_epochs()` as if a loaded group could
+  return `Ok(None)`, and the top-level
+  `StoreError::PastEpochRetentionRejected` variant is unused. The enforced
+  rejection path is through the nested `GroupError` variants documented above.
 - `docs/issues/013-pr-39-delta-review.md` is the overdue review of `33fcfe9`.
   Its principal finding is that the safer Subscribe-based Welcome
   acknowledgment changed accepted ADR-0005 behavior without updating the ADR.
@@ -427,4 +451,4 @@ writes a `MessageSecretsStore` that retains no past tree when
 `max_past_epochs = 0` and calls `delete_previous_epoch_keypairs` for the prior
 epoch. `StoreProvider` borrows the same transaction, so those deletions and the
 Citadel epoch update commit together. Issue 014 gives the full test sequence
-and exact accepted error oracle. The core lane did not write K3's test.
+and exact accepted error oracle. This batch does not implement K3's test.

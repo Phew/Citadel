@@ -1,13 +1,13 @@
 # 013: PR #39 post-merge delta review
 
-- **Reporter:** core lane
+- **Reporter:** security review
 - **Date:** 2026-07-27
 - **Blocks:** honest closeout of the M2 delivery surface; PR #39 is already merged
 - **Related:** commit `33fcfe9`, ADR-0005, ADR-0006
 
 ## Verdict
 
-**CHANGES.** The transport behavior and its real-PostgreSQL evidence are
+**CHANGES.** The transport behavior and its real PostgreSQL evidence are
 substantial and mostly sound, but the merged surface contains one unaccepted
 contract change and two fail-closed/accuracy defects. This is a post-merge
 review, so the verdict records follow-up work rather than pretending the merge
@@ -88,18 +88,18 @@ migration bytes.
 - REST is the only write path; fanout occurs only after commit.
 - Gateway lag is recoverable through the authoritative sequence cursor.
 - Bearer validation matches ADR-0003's stored token semantics.
-- The canonical migration corpus, prefix check, lock cleanup, and
-  real-PostgreSQL evidence are non-vacuous.
+- The canonical migration corpus, prefix check, lock cleanup, and real
+  PostgreSQL evidence are non-vacuous.
 - The delivery canary and compose harness exercise real rows and real service
   paths.
 
-## What I need from charge
+## Decision required from charge
 
-Rule on the ADR-0005 Welcome-acknowledgment amendment after K3 reviews it. The
+Rule on the ADR-0005 Welcome acknowledgment amendment after K3 reviews it. The
 code-hardening findings can land as ordinary fixes under the accepted
 fail-closed posture; they do not require a new design decision.
 
-## Non-goals / what I will not improvise
+## Scope boundaries
 
 This review does not rewrite immutable migration 0004, revert the safer
 Subscribe acknowledgment, or claim that an already merged commit was approved

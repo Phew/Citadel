@@ -9,7 +9,7 @@
   tracked in `docs/issues/011-adr-0007-non-blocking-notes.md`. Both landed with the store
   build and are folded into Amendment 1 §A.5 and §A.7; the issue is CLOSED.
 - **Date:** 2026-07-24 (body); 2026-07-26 (Amendment 1)
-- **Amendment 2:** **PROPOSED** (core lane, 2026-07-27). It has no force
+- **Amendment 2:** **PROPOSED** (2026-07-27). It has no force
   unless charge accepts it after K3's blocking review.
 - **Deciders:** charge (required for ACCEPTED); independent design review: K3
   **complete — CHANGES**, `docs/issues/009-adr-0007-store-design-review.md`
@@ -1189,24 +1189,38 @@ no public getter. The similarly named public getter belongs to
 
 The required check therefore serializes the loaded join configuration with the
 pinned codec and reads `max_past_epochs` from that representation. This is the
-representation persisted in the provider's `join_group_config` row. Missing,
-renamed, malformed, non-integral, or out-of-range data is not zero and fails
-closed. A non-zero value fails with `PastEpochRetentionRejected`; an unreadable
-value fails with `PastEpochRetentionUnreadable`.
+representation persisted in the provider's `join_group_config` row. A loaded
+configuration with a non-zero value fails with
+`PastEpochRetentionRejected`; one whose field cannot be extracted fails with
+`PastEpochRetentionUnreadable`. Malformed persisted data that OpenMLS cannot
+load fails earlier through `GroupError::Mls`. No unreadable case defaults to
+zero.
 
 This replaces only the accessor premise. The explicit zero pin, the
 post-restart assertion, and the requirement to reject widened persisted state
 are unchanged.
 
-### B. KeyPackage generation is a temporary exception to the operation ledger
+### B. Operation-ledger scope and two in-profile exceptions
 
 Section 5's statement that every state-changing public operation requires an
-`OperationId` was too broad. `LocalStore::new_key_package` changes provider
-state but is transactional and deliberately unledgered in the M2 build. Every
-successful invocation returns a newly generated KeyPackage and persists its
-private material in the same transaction.
+`OperationId` was too broad. The ledger governs these nine mutation methods:
+`create_group`, `join_from_welcome`, `add_members`, `send`, `receive`,
+`prepare_self_update`, `confirm_self_update`, `abort_self_update`, and
+`accept_kt_head`. Profile lifecycle
+operations (`open`, `close`, and `destroy`) instead follow Sections 2 and 6:
+startup reconciliation is idempotent, close releases resources, and destroy
+returns a structured residual report. None is an operation-ledger unit.
 
-The exception is narrow:
+Within an open profile, the M2 build has two additional state-changing public
+methods that are explicit ledger exceptions.
+
+#### B.1 KeyPackage generation
+
+`LocalStore::new_key_package` changes provider state but is transactional and
+deliberately unledgered. Every successful invocation returns a newly generated
+KeyPackage and persists its private material in the same transaction.
+
+This exception is narrow:
 
 - it applies only to KeyPackage generation;
 - replay is not promised and callers must not treat a second invocation as the
@@ -1216,10 +1230,10 @@ The exception is narrow:
   store indefinitely; and
 - this is an M2 limitation, not the intended production pool lifecycle.
 
-RFC 9420's single-use rule does not by itself justify returning fresh material
-on retry. A durable design must also prevent the same public KeyPackage from
-being published or consumed twice. Before the pool is replenished
-automatically, the follow-up order is:
+RFC 9420's one-use design and init-key uniqueness requirements do not by
+themselves justify returning fresh material on retry. A durable design must
+also prevent the same public KeyPackage from being published or consumed
+twice. Before the pool is replenished automatically, the follow-up order is:
 
 1. make publication idempotent and enforce uniqueness for the public
    KeyPackage, including its init-key identity;
@@ -1231,6 +1245,20 @@ automatically, the follow-up order is:
 Until that lifecycle lands, the accepted operation-ledger guarantee must be
 read as excluding `new_key_package`. This amendment neither permits
 KeyPackage reuse nor claims that the current orphan behavior is best practice.
+
+#### B.2 Pending-transmission acknowledgment
+
+`LocalStore::acknowledge_transmission` deletes a pending outbox row without a
+new `OperationId`. Its input is the exact 16-byte idempotency key of that
+transmission, and `DELETE ... WHERE idempotency_key = ?` is naturally
+idempotent: the first successful call removes at most one row and every retry
+has the same terminal outcome. It returns no replay payload and makes no MLS
+mutation.
+
+This is an explicit exception to Section 5's universal wording, not a read
+operation. If acknowledgment later acquires a result that must be replayed or
+side effects beyond the keyed delete, it must join the operation ledger before
+that expansion ships.
 
 ### C. Windows path containment has a residual race
 
@@ -1258,19 +1286,20 @@ The build finding that motivated a split was withdrawn. RFC 9420 places
 decryption through `MlsMessageIn::try_into_protocol_message()` and
 `ProtocolMessage::content_type()`.
 
-The M2 implementation nevertheless keeps one incoming-wire operation domain.
-Its fingerprint covers the group identifier and the complete raw wire bytes,
-so an identical retry has the same identity whether it later yields an
-application message or a commit. Parsing once inside the store transaction
-also avoids a caller-side parse followed by an actor-side parse that could
-disagree. The outcome remains tagged as received application or merged commit.
+The M2 implementation nevertheless keeps one incoming MLS wire-message
+operation domain. Its fingerprint covers the group identifier and the complete
+MLS wire bytes, so an identical retry has the same identity whether it later
+yields an application message or a commit. Parsing once inside the store
+transaction also avoids a caller-side parse followed by an actor-side parse
+that could disagree. The outcome remains tagged as received application or
+merged commit.
 
 This replaces Section 5's two incoming atomic-unit labels with one semantic
 unit: process one incoming MLS wire message. The current
 `ReceiveApplication`/`receive_application` discriminator is a legacy label for
 that shared domain, not a claim that every input is application content. Its
-source comment must use the raw-wire rationale above rather than the withdrawn
-"caller cannot know" premise.
+source comment must use the wire-message rationale above rather than the
+withdrawn "caller cannot know" premise.
 
 ### E. SQLCipher pragma order and result type are normative
 
@@ -1289,23 +1318,27 @@ so existing content is preserved. Citadel neither reads nor trusts that
 content. Mutual exclusion and containment come from the file lock and
 handle-based validation only.
 
-### G. Native credential-backend conformance evidence currently covers zero platforms
+### G. Native credential backend conformance evidence currently covers zero platforms
 
 Section 2 requires release-CI evidence on Windows, macOS, and Linux. As of
 2026-07-27 every repository CI job runs on `ubuntu-latest`; there are no
-Windows or macOS jobs. The first Linux native-backend job ran four credential
-tests: the two tests that do not write to Secret Service passed, while both
-live write tests failed with `Locked("Secret Service: no result found")`.
-The fresh runner had no login collection for `gnome-keyring-daemon --unlock`
-to unlock.
+Windows or macOS jobs. In
+[run 30325896448](https://github.com/Phew/Citadel/actions/runs/30325896448),
+the first Linux native credential backend job ran four credential tests: the
+two tests that do not write to Secret Service passed, while both live write
+tests failed with `Locked("Secret Service: no result found")`.
+The result is consistent with the fresh runner having no default collection
+for `gnome-keyring-daemon --unlock` to unlock. The job did not inspect the
+daemon's collection state directly, so the exact provisioning cause remains
+to be confirmed by K3's CI repair.
 
 That failure is provisioning evidence, not evidence that the Linux adapter is
-wrong. A local Windows run passed the native Credential Manager round-trip
-tests, but local evidence is not the required committed release matrix.
-Therefore the conformance count is **zero of three platforms**. This amendment
-does not weaken the three-platform requirement, treat a local run as CI, or
-mark the criterion complete. CI provisioning and the release matrix remain
-open.
+wrong. A local Windows terminal run was reported passing the native Credential
+Manager round-trip tests, but its output was not committed or published and it
+is not the required release matrix. Therefore the conformance count is
+**zero of three platforms**. This amendment does not weaken the three-platform
+requirement, treat a local run as CI, or mark the criterion complete. CI
+provisioning and the release matrix remain open.
 
 ## Primary sources
 
