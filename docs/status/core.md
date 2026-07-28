@@ -19,8 +19,9 @@ roster table is the only place one belongs.
 ADR-0007 (local encrypted client store) was designed, independently reviewed by K3, amended
 once, and ACCEPTED by charge on 2026-07-26 (`d302e76`). The store was then built against the
 accepted design, with the build-time divergences now proposed as Amendment 2, and is **PR #69**
-on branch `core/local-encrypted-store`. It is out of draft and awaiting **K3's blocking
-review**. Four defects found in the ADR during the build are filed as
+on branch `core/local-encrypted-store`. It is out of draft. K3's blocking review in PR #74
+returned **CHANGES** with three required items; the complete shutdown queue is at the end of
+this file. Four defects found in the ADR during the build are filed as
 `docs/issues/012`; three hold, one is withdrawn with its reasoning kept. The persisted-state
 FS test belongs to K3. The accepted differential PCS oracle is also still unbuilt; issue 014
 corrects the prior milestone count. **M2 is three of five, not four of five.**
@@ -487,3 +488,190 @@ so F2 can compare exact member identities without reading provider tables. K3
 owns the harness-level PCS criterion that invokes the Core-owned proof after
 driving the live update. A Core-only unit test is necessary component evidence,
 but it does not satisfy PLAN §9's harness criterion.
+
+---
+
+## Shutdown snapshot 2026-07-28
+
+This section supersedes earlier queue and branch-state paragraphs where they
+conflict. It is written for a reader with no session memory.
+
+### Current evidence and milestone state
+
+- `main` is `745cae1`. The tested store implementation/evidence head is
+  `88e1152` on `core/local-encrypted-store`, PR #69, out of draft. The
+  shutdown status commit follows it without changing code.
+- GitHub Actions run
+  [30331164102](https://github.com/Phew/Citadel/actions/runs/30331164102)
+  tested `88e1152` and completed successfully. Seven jobs succeeded: the path
+  filter, format/clippy/workspace tests, audit/deny plus confinement and
+  migration checks, PostgreSQL 16 tests, compose and stack-backed harness
+  tests, the no-plaintext canary, and the live Linux Secret Service job. The
+  desktop job was skipped by its path filter.
+- The native job resolved the default collection to
+  `/org/freedesktop/secrets/collection/login` and all four credential tests
+  passed. This is real Linux live credential backend execution. It is not the
+  ADR's named release-CI conformance evidence: there is no release-profile
+  graph check, Windows runner, or macOS runner. Full release conformance
+  remains unimplemented on all three platforms.
+- The compose log ran all five current M2 harness tests. Its
+  `pcs_recover_after_update` success does not prove PCS. M2 remains **three of
+  five**: persisted-state FS and the captured-state differential PCS criterion
+  are both open.
+- K3's blocking review is PR #74 and returned **CHANGES**. PR #69 must not
+  merge until R1 through R3 below are resolved and K3 re-reviews them.
+
+### What did not run or does not exist
+
+- The desktop job in run 30331164102 was skipped by the path filter.
+- No CI job runs on Windows or macOS. No job builds the store's production
+  release feature graph on any platform.
+- `device_compromise_past_messages_unreadable_fs` and
+  `post_restart_update_proves_post_compromise_security` do not exist.
+  `pcs_recover_after_update` ran, but its success-only assertions are not the
+  differential PCS criterion.
+- `store_whole_file_rollback_boundary_is_explicit` does not exist.
+- `store_codec_v1_roundtrips_golden_corpus_and_migrates` ran, but the named
+  committed corpus and transactional test-v2 migration do not exist. The test
+  proves only current-build determinism and round-trip behavior.
+- `store_release_excludes_secret_evidence_paths`, the three-platform release
+  graph checks, and the all-desktop-target hot-path benchmark do not exist.
+- The freed-page reconstruction half of
+  `store_epoch_transition_removes_obsolete_secret_bytes` remains deferred; the
+  existing test proves logical provider-row and raw-file-byte deletion only.
+- Local Windows verification ran format, clippy, workspace tests, audit, deny,
+  locked metadata, crypto confinement, and the migration checker. Local
+  PostgreSQL and compose tests remained ignored; run 30331164102 executed those
+  tests against PostgreSQL 16 and the real Compose stack instead.
+
+### Claim audit for this session
+
+- The M2 correction holds after re-reading every accepted criterion: F2, F4,
+  and the no-plaintext criterion have evidence; persisted-state FS is absent;
+  the current recovery test does not satisfy PCS.
+- The overdue PR #39 and M2 harness reviews in issues 013 and 014 remain
+  supported. K3 accepted every 013 finding and both 014 findings on
+  `k3/answers-013-014`; its code and ADR responses are pushed but not merged.
+- The native credential claim remains deliberately split. Linux live backend
+  execution is proven by logs. The ADR's broader release-CI contract remains
+  unimplemented, so no three-platform release-conformance count is claimed.
+- Amendment 2's KeyPackage publication, fetch, handout, and deletion
+  invariants survived the advisor review. The implementation does not yet
+  provide that future lifecycle; §B.1 describes a gate on future
+  replenishment/reaping, not a claim that M2 implements it.
+- The persisted-state API and atomic obsolete-epoch deletion description in
+  issue 014 still matches the store source. The ownership statement needed one
+  correction: Core owns the missing drivable client, while K3 owns harness
+  wiring after that client exists.
+- The two superseded `actor.rs` comments are the only known source/proposed
+  amendment rationale mismatches from this session's Amendment 2 claims. They
+  are R1 and remain unmodified pending charge's decision.
+
+### R1 contains two superseded source premises
+
+K3's R1 correctly identifies `store/actor.rs:657-659`, which says the caller
+cannot distinguish an application message from a commit before decryption.
+That is the withdrawn premise from issue 012 DEFECT 3. Amendment 2 §D requires
+the content-type-independent wire fingerprint and single-parse transaction
+rationale instead.
+
+R1 is incomplete unless it also covers `store/actor.rs:571-576`.
+`new_key_package` says a retry has to generate a new KeyPackage because replay
+would hand one init key to two joiners. Amendment 2 §B.1 supersedes that
+premise: generation replay becomes safe only after publication and fetch are
+durably idempotent and uniqueness is enforced across the lifecycle.
+
+Both comments were deliberately left unchanged in the doc-only Amendment 2
+batch because the amendment is still **PROPOSED**. Core owns both corrections.
+The gate is PR #69 merge: if charge accepts Amendment 2, both source comments
+must be corrected before K3's re-review. If charge rejects it, charge must name
+the controlling replacement rationale before either comment changes.
+
+### The drivable persisted client belongs to Core
+
+Core accepts ownership of the missing `LocalStore`-backed drivable client.
+This is the middle between the responsibilities already recorded in issue 014:
+
+- Core owns the drivable client and the store-facing typed API it needs,
+  including a pending-transmission completion disposition that distinguishes a
+  prepared self-update from an already-merged commit.
+- K3 owns harness wiring once that client exists, including durable transport,
+  close/reopen, snapshot timing, and the harness-level FS and PCS criteria.
+- Core owns ADR-0007 §6's captured-state differential PCS proof and its
+  independent oracle. K3's harness criterion invokes that proof after driving
+  the live update.
+
+The gate is M2 close. Neither remaining criterion may be called green until the
+Core client exists, K3's harness uses it, and the required negative oracle
+passes. A Core-only unit test remains component evidence, not PLAN §9 harness
+evidence.
+
+The deterministic member-identity view is also Core-owned, but K3 narrowed the
+existing F2 claim to member count and epoch. Its gate is any future claim of
+exact membership convergence, no later than M3's membership/commit-ordering
+integration; it is not a hidden fourth requirement for the current F2 count.
+
+### Amendment 2 state
+
+Amendment 2 has passed the advisor's verification and the advisor recommends
+acceptance. Its KeyPackage lifecycle pins both cases charge requested:
+`publish_pending` survives a lost publication response and blocks cleanup, and
+`handed_out` is recorded irreversibly before bytes can reach a fetcher while
+remaining distinct from successful MLS consumption. Its positive deletion
+predicates also make age, pool age, indeterminate network state, and every
+possibly published or handed-out state deletion blockers.
+
+It remains **PROPOSED**. Only charge can accept it by committing the status
+change under rule 3. No implementation or merge may treat this recommendation
+as acceptance.
+
+### Open items, owners, and forcing gates
+
+| Item | Owner | Gate |
+|---|---|---|
+| R1: correct both superseded `actor.rs` premises | Core | Before PR #69 K3 re-review and merge, after charge's Amendment 2 ruling |
+| R2: implement `store_whole_file_rollback_boundary_is_explicit`, or record a charge-approved narrowing | Core implementation; charge decides any narrowing | Before PR #69 merge |
+| R3: commit the schema-complete v1 corpus and implement the transactional test-v2 migration, or record a charge-approved narrowing | Core implementation; charge decides any narrowing | Before PR #69 merge |
+| Amendment 2 acceptance | charge | Before R1 is finalized and before PR #69 merge |
+| ADR-0005 Amendment 2 acceptance from `k3/answers-013-014` | charge | Before the follow-up branch merges or Subscribe acknowledgment is treated as accepted text |
+| Re-review R1-R3 | K3 | After Core pushes the complete fixes, before PR #69 merge |
+| Merge PR #74 | charge | It records the blocking review and can land now |
+| Merge PR #69 | charge | After K3 approves the fixes and required decisions are committed |
+| `LocalStore`-backed drivable client and typed pending-completion disposition | Core | Before either remaining M2 criterion can run |
+| Harness durable-client wiring and real FS criterion | K3 | After the Core client lands; before M2 close |
+| Captured-state differential PCS proof | Core | After the drivable client exists; before M2 close |
+| Harness-level PCS criterion invoking the Core proof | K3 | After the Core proof lands; before M2 close |
+| Exact member-identity view | Core | Before any exact-membership claim, no later than M3 integration |
+| N1 reconciliation outcome/wording plus commit-error injection | Core | Before the first production reconciliation caller, no later than M3 integration |
+| N2 verified KT-head API boundary | Core | Before M3 wires KT advancement |
+| N3 evidence-depth sub-elements | charge scopes; Core implements accepted scope | Scope decision before M2 close; accepted M2 items before M2 close |
+| N4 production feature-graph/evidence exclusion guard | Core defines the graph assertion; K3 owns CI wiring | Before a release workspace build can unify `testing`, and before any PCS extractor lands |
+| N5 physical freed-page reconstruction evidence | Core | Before any claim broader than logical provider-row and raw-byte deletion |
+| N6 small correctness and naming findings from PR #74 | Core | Before M2 close |
+| Assignment of Windows/macOS and release-profile store conformance | charge decides whether CI ownership stays with K3 or moves to Grok; Core reviews the evidence contract | Before implementation starts |
+| Windows/macOS and release-profile store conformance | The lane charge assigns | Before any desktop store release or three-platform conformance claim |
+| All-desktop-target store latency evidence | Grok owns performance; Core supplies store measurement surfaces | Before any store hot-path performance claim or desktop release gate that depends on it |
+| PR #73, superseded by `b772c0f` in PR #69 | charge | Close unmerged once PR #69 preserves the fix |
+| K3's `k3/answers-013-014` branch | K3 owns the branch; charge merges | Open its follow-up PR immediately after PR #69 lands |
+| ADR-0006 A: role isolation and permission evidence | K3; Core reviews security-adjacent deltas | Before any production deployment uses separate migration/runtime roles |
+| ADR-0006 B: minimum-schema and discovery checks | K3; Core reviews security-adjacent deltas | Before mixed-version deployment or a service-specific minimum schema |
+| ADR-0006 C: risk-classification enforcement | K3; Core reviews security-adjacent deltas | Before the first `contract` or `data` migration lands |
+| ADR-0006 D: rollback and failed-migration evidence | K3; Core reviews security-adjacent deltas | Before rollback or failed-migration Compose behavior is claimed as release evidence |
+| M3 commit ordering and F7 | Core | Only after charge closes M2 at the integration checkpoint |
+| M3 churn rig and F7 race test | K3 | After Core's M3 commit gate is drivable |
+| Device-transparency `KtLeaf` residual | Core | Before device transparency is exposed as a product property |
+
+### Branch state at shutdown
+
+- `core/local-encrypted-store`: pushed, PR #69 open. Its tested code/evidence
+  head is `88e1152`; one later status-only shutdown commit follows it. The
+  branch is deliberately retained because K3's R1-R3 block merge.
+- `k3/pr-69-review` at `02b5025`: PR #74 open; owned by K3 and awaiting charge.
+- `k3/store-evidence-provisioning`: PR #73 open but superseded by `b772c0f`
+  already in PR #69; charge owns closure.
+- `k3/answers-013-014` at `6fd82d8`: pushed without a PR; K3 owns the follow-up
+  after PR #69.
+- `advisor/shutdown-protocol` (PR #75) and `advisor/status-2026-07-28`
+  (PR #76) are advisor-owned and awaiting charge.
+- Core owns no merged-but-unswept remote branch. The retired local `sol/*`
+  worktrees predate this session and were not touched.
