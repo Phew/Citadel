@@ -1,106 +1,130 @@
-# Advisor status - 2026-07-26 evening (M2: one component left, core lane idle)
+# Advisor status - 2026-07-27 (store built, core seat back to Sol, both lanes working)
 
 Read docs/roles/ADVISOR.md, then docs/roles/ADVISOR-CONTEXT.md (full memory; this file is the
 immediate resume queue). Worktree: `C:\Users\charge\Documents\GitHub\Citadel\citadel-advisor`.
 Verify every agent report against the repo/CI logs before endorsing — this milestone every
 cross-review surfaced something green CI missed.
 
-## FIRST ACTION this session (2026-07-26, evening)
+## FIRST ACTION next session (written 2026-07-27, both lanes mid-task)
 
-**Core lane: build the local encrypted client store.** Unchanged from the morning entry, and
-now the oldest idle item in the project. ADR-0007 and Amendment 1 have been **ACCEPTED**
-(charge, 2026-07-26, `d302e76`) with both reviews closed and the ADR header reading "Build may
-start." The runway has been clear for a full session and nothing has been pushed to a `core/`
-branch. It is the last unbuilt component of M2.
-
-Everything else below is either parallel to it or downstream of it.
+**Verify what the two working lanes push. Nothing else is ahead of it.** Core (Sol) is drafting
+ADR-0007 Amendment 2 and verifying the inherited store branch; K3 is fixing the store-evidence
+job's provisioning. Neither had landed when this was written.
 
 ## Resume queue, in order
 
-1. **Core lane: build the store** to the accepted design. Three things land *with* the build,
-   not before and not after:
-   - the `deny.toml` `wrappers = ["libsqlite3-sys"]` narrowing on the `openssl-sys` ban at
-     `deny.toml:68`, which Amendment 1 §B specified and correctly did not apply while the ADR
-     was PROPOSED. State in the PR body that it is the accepted consequence recorded in §B.3,
-     not a lint fix. The ban's stated intent at `deny.toml:63` is "TLS is rustls-only"; the
-     narrowing keeps the TLS half and knowingly admits a vendored OpenSSL C codebase into the
-     one process holding plaintext;
-   - both notes in `docs/issues/011`, especially **N1**: A.5 asserts the open sequence checks
-     extension loading is off without naming a mechanism. Pin a behavioral probe (attempt
-     `load_extension()`, require "not authorized") wired into
-     `store_release_uses_only_pinned_sqlcipher`. An unnamed assertion is not evidence, and this
-     project has produced that exact defect five times now, the fifth being `perf/README.md`
-     (see `#65` below);
-   - `docs/status/core.md`, same PR, per rule 2.
-   K3 blocking-reviews it. Also still owed by that lane, and older than the store: the `#39`
-   delta re-review against `33fcfe9`, and a review of K3's merged M2 exit-AC harness at
-   `295d829`. Together those are ~1,500 lines and a full service, so they are real work.
-2. **K3: `device_compromise_past_messages_unreadable_fs`**, once the store exposes its
-   persisted-state API. This is M2's fifth and final exit criterion. Build it to the criterion
-   **as narrowed** (PLAN §9 M2, ACCEPTED 2026-07-26), not to the old wording. The core lane's
-   handoff must name which API surface exposes persisted state and how obsolete epoch state is
-   deleted, because that is what the test drives.
-3. **PCS evidence at rung 1.** Grok's spike (`docs/issues/010`, merged `702bbd9`) answered all
-   four feasibility questions YES, so the full differential design in ADR-0007 §6 is
-   achievable and no fallback rung is needed. Its three residual risks are implementation
-   concerns, not feasibility ones; the sharpest is that HPKE info/context label binding for
-   UpdatePath open must match RFC 9420 and OpenMLS exactly, which is build work nobody has done.
-4. **Grok: fix PR #65's self-diff defect.** NOT merged, see below.
+1. **Core (Sol): ADR-0007 Amendment 2.** Covers the three confirmed build defects, the two
+   smaller findings, a decision on the withdrawn one, and the zero-platform state of §2's
+   native-backend conformance evidence. Doc-only, decides nothing, **charge accepts** (rule 3).
+   Sol authored the ADR, so it does not accept its own amendment and K3 blocking-reviews it.
+2. **K3: the store-evidence job.** `ci.yml` is K3's surface. If a real default collection cannot
+   be provisioned reliably on a GitHub runner, that goes to `docs/issues/` rather than weakening
+   the test. **A store-evidence job that passes without exercising the daemon is worse than the
+   current honest red.**
+3. **PR #69 merge decision** once Amendment 2 and the CI job resolve. K3 blocking-reviews the
+   store; the advisor does not substitute.
+4. **K3: `device_compromise_past_messages_unreadable_fs`**, M2's fifth and final exit criterion,
+   once Sol hands over the persisted-state API naming which surface exposes persisted state and
+   how obsolete epoch state is deleted. Build to the criterion **as narrowed** (PLAN §9 M2,
+   2026-07-26). The reasoning for leaving it unwritten is committed at
+   `crates/test-harness/tests/m2_dm.rs:23` and still stands. **No placeholder.**
 5. **Integration checkpoint**, then charge declares M2.
-6. ADR-0006 follow-ups A-D remain binding, tracked, not started.
+6. Still owed by the core lane, older than the store and inherited with the seat: the delta
+   re-review of `#39` against `33fcfe9` (5,098 lines, 41 files), and a review of K3's M2 exit-AC
+   harness at `295d829` (1,505 lines). The first was originally Sol's own and was never posted
+   before charge merged.
+7. ADR-0006 follow-ups A-D remain binding, tracked, not started.
 
-## PR #65: the three completion criteria were met, and a worse defect surfaced
+## The store landed (PR #69), and the core seat changed twice around it
 
-The morning entry held `#65` on three criteria (fmt green, real tests, one real run with
-`baseline.json` committed). Grok met all three overnight. Verified against source rather than
-taken on report, because the branch was **force-pushed** and the reviewed commit `75ecdb3` is
-no longer reachable from it:
+Opus 5 built the local encrypted client store to the accepted ADR-0007 design: 8,153 insertions
+across 36 files, `crates/citadel-core/src/store/`, no `todo!()`, no `#[ignore]`, no placeholder
+tests. All three "same PR" items landed with it, and two exceeded the brief:
 
-- fmt green, all seven CI jobs SUCCESS on `6f3971a`.
-- `75ecdb3` was 746 lines with zero tests, exactly as recorded. There are now 7 `#[test]`
-  covering percentile edge cases, NaN and negative rejection, and JSON schema round-trip.
-- `baseline.json` is a genuine measurement, not a fabrication. Hostname `DESKTOP-IFQG7PD`,
-  `rustc 1.95.0 (59807616e 2026-04-14)` and `cpu_count 28` all match the host exactly; the
-  embedded timestamp is 44 seconds before the commit; the embedded `git_sha` is its own parent;
-  and 50 messages over 174.7432 ms is 286.134 msg/s to the digit.
+- the `deny.toml` narrowing is framed as a **decision** with §B.4's reopen conditions written
+  into the config itself, so a future reader hitting OpenSSL in `cargo tree` can tell a decision
+  from a drift without leaving the file;
+- `docs/issues/011` N1 became a real behavioral probe (`SELECT load_extension(?1)` requiring
+  `not authorized`), and the build found the reason it was needed: the stock bundle compiles
+  `-DSQLITE_ENABLE_LOAD_EXTENSION=1`, so the compile-time pin the ADR assumed does not exist;
+- N2's FTS3 row asserts the flags are **present** rather than absent, because A.4's foreclosure
+  rests on "compiled but unreachable" and a bundle that actually removed them would need the
+  record corrected. That is a sharper reading than the one the advisor asked for.
 
-**Still blocked, on something none of those criteria would have caught.** `justfile:75` passes
-the same path to `--write` and `--diff`. In `perf/main.rs` the write block (line 730) runs
-**before** the diff block (line 738), so every run overwrites `baseline.json` with the current
-report and then compares that report against itself. Every metric prints `+0.0%` forever. It
-has not surfaced yet only because the first run took the "file missing, skip compare" path.
+Then charge returned the seat to Sol on quota restoration (`6306e1d`). The handover was
+deliberately staged: Opus fixed CI, filed its findings as `docs/issues/012`, and wrote
+`docs/status/core.md` for a reader with zero memory, then stood down. Nothing was orphaned.
 
-This is worse than the three items it replaced. A missing perf harness is a known gap; a
-harness that reports no regression on every run is a gap that looks like coverage, and M3 is
-exactly when someone will trust it. It is also defect-class instance five: `perf/README.md`
-says "later runs `--diff` against it," which is behavior the code does not have.
+## Four defects found in ADR-0007 during the build; three hold
 
-**Fix:** read the `--diff` file into memory *before* the write block, then write, then compare
-against the in-memory prior. Keep the single-file workflow; it is the right ergonomics and it
-is what the README documents. Add a test that fails on the ordering, since all seven existing
-tests pass on the broken binary.
+Found by the lane implementing the design, in a document that had already passed an independent
+design review and been ACCEPTED. That is the strongest evidence yet that building is a review
+method no amount of reading replaces.
 
-**Non-blocking:** `fetch_seed_below_page_limit_is_rejected_by_contract` asserts
-`MESSAGES_PAGE_LIMIT - 1 < MESSAGES_PAGE_LIMIT`, true for every integer, testing nothing.
-Exercise the real guard or delete it. The other six are sound and
-`page_limit_constant_matches_adr0005` is a legitimate spec pin.
+- **DEFECT 4 CONFIRMED, and it overturns K3's §D.2.** §6's fail-closed `max_past_epochs` check is
+  not implementable as written. `MlsGroupJoinConfig::max_past_epochs` is `pub(crate)`
+  (`config.rs:52`), its impl block (`:61-81`) has no accessor, and the public getter at `:191` is
+  inside `impl MlsGroupCreateConfig` which opens at `:174`. `configuration()` returns
+  `&MlsGroupJoinConfig`. Read from the serde representation instead, which is arguably stronger
+  since that is what the provider persists.
+- **DEFECT 2 CONFIRMED.** §5's "every state-changing operation requires an `OperationId`" is a
+  universal quantifier that conflicts with RFC 9420 single-use KeyPackages: idempotent replay
+  would hand two joiners the same init key. Implemented transactional but deliberately unledgered.
+- **DEFECT 1 CONFIRMED.** §2 overstates path containment on Windows. `SQLITE_OPEN_NOFOLLOW` is
+  inert outside the unix VFS, so the database is path-validated with a TOCTOU window the lock
+  ordering narrows but does not close.
+- **DEFECT 3 WITHDRAWN, premise false.** The claim was that a caller cannot know whether an
+  incoming message is an application message or a commit before decrypting. It can:
+  `content_type` is a **cleartext** field of `PrivateMessage` under RFC 9420 §6.3.2
+  (`private_message.rs:35`), publicly reachable via
+  `MlsMessageIn::try_into_protocol_message()` (`message_in.rs:115`) and
+  `ProtocolMessage::content_type()` (`message_in.rs:212`). The one-kind decision may still be
+  right, on the basis that an identical retry fingerprinted over raw wire bytes matches
+  regardless. It has to be justified that way, not on an impossibility that is not real.
 
-**Process note:** force-pushing a PR under open review made the reviewed commit unreachable
-from the branch. It was recoverable only because the SHA was written down here. Fixups on top,
-not history rewrites, while a review is open.
+Same shape, both directions, inside one week: the core lane caught a false leg in K3's FTS5
+argument on 07-26, and had its own false leg caught on 07-27. Neither was visible to one reader.
 
-## Position check, 2026-07-26 evening
+## ADVISOR ERROR, 2026-07-27: corrected a correct citation
 
-M0 and M1 closed. **M2 is 4 of 5 exit criteria green**, all four standing CI gates that execute
-on every push: `f2_three_client_dm_creation`, `f4_send_receive_roundtrip`,
-`no_plaintext_scan_delivery_tables`, `pcs_recover_after_update`,
-`adversarial_ds_swapped_keypackage_rejected`. M3 through M8 not started, though M3 now has both
-a perf baseline harness and a churn rig pre-positioned.
+**The single most instructive error in this project so far, because the method was right and the
+input was wrong.**
 
-Scale: 14,300 lines of Rust across 10 crates, 161 tests, 7 ADRs all ACCEPTED, 6 CI job groups.
+The advisor "corrected" ADR defect 1's citation from `sqlite3.c:61796` to `:61874-61875`, having
+verified it against source. Opus refused the correction and was right.
+**`libsqlite3-sys` 0.30.1 ships TWO amalgamations**: `sqlite3/sqlite3.c` (257,673 lines) and
+`sqlcipher/sqlite3.c` (261,439 lines). This project compiles the SQLCipher one
+(`build.rs:121`, `cfg.file(format!("{lib_name}/sqlite3.c"))`). In that tree `:61795-61797` is
+exactly the `SQLITE_OK_SYMLINK` / `SQLITE_OPEN_NOFOLLOW` site and `:61874` is
+`ROUND8(pVfs->szOsFile)`, a pager size computation. **The original `61796` was correct.**
 
-`crates/citadel-core/src/` holds nine files and none of them is a store. That absence is the
-entire remaining surface of M2.
+Conclusive proof of which tree the repo's citations mean: three of them are SQLCipher-only
+symbols that cannot resolve in the plain tree at all, and all three land exactly
+(`CIPHER_VERSION_NUMBER 4.5.7` at `:106612`, `sqlcipher_get_mem_security` at `:109000`, the
+`load_extension` disallow comment at `:135068`).
+
+The lesson is not "verify against source," which the advisor did. It is **confirm which file you
+opened**, especially where a dependency ships two builds of the same amalgamation. The advisor
+had lectured, in the same message, that a wrong line number corrodes the correct claims beside
+it. `open.rs` now names the amalgamation explicitly so the next reader does not fall in.
+
+## Open and unfixed: native-backend conformance exists on ZERO platforms
+
+The `store · native Secret Service backend` job failed on its first-ever run and the failure is
+real. Two tests that never contact the daemon pass; both that write to the live Secret Service
+fail with `Locked("Secret Service: no result found")`, because `--unlock` unlocks an *existing*
+login keyring and a fresh runner has none. The adapter is correct and classified the backend
+state properly; the provisioning is incomplete.
+
+**Every CI job is `ubuntu-latest`. There is no Windows or macOS runner anywhere in the
+workflow.** So ADR-0007 §2's native-backend conformance evidence currently exists on **zero**
+platforms, not one of three. The outgoing core lane recorded that honestly in both `core.md` and
+the PR body rather than letting anyone count Linux as done, and correctly did not fix it, because
+`ci.yml` is K3's surface.
+
+Local Windows clippy compiles `windows.rs` and never `secret_service.rs`; CI does the reverse.
+**Neither side sees both**, which is why "green locally" and a red CI gate were both honest
+reports of the same commit.
 
 ## Day report, 2026-07-26
 
@@ -157,7 +181,7 @@ crate source rather than taken on report, and it kept paying:
   instead, numbered 011 rather than 010 because 010 was already assigned to Grok's spike and
   this project has had an issue-number collision before.
 
-## Core seat: Opus 5, and the independence caveat (2026-07-26)
+## Core seat history, and the independence caveat (RESOLVED 2026-07-27)
 
 Sol ran out of usage quota mid-milestone with the store unbuilt, so charge staffed the core seat
 with **Claude Opus 5** under rule 12. On the evidence it is the right seat-filling: SWE-bench Pro
@@ -166,7 +190,10 @@ per M tokens (half Fable's input price), and a 1M context with no harness cap, w
 ceiling was 272K against 1M advertised. End-to-end codebase resolution is exactly what building
 the store is.
 
-**The caveat, recorded because it is a genuine reduction in independence: the advisor is also
+**RESOLVED 2026-07-27: the seat returned to Sol on quota restoration (`6306e1d`), so the core
+lane and the advisor are no longer the same model.** The caveat below applied only while both
+seats were Opus 5, and it is retained because the seat has moved four times in eleven days and
+may move again. **The caveat as it stood: the advisor was also
 Opus 5.** Same-model instances share blind spots. It is bounded rather than fatal, because the
 blocking reviewer of core-lane code is K3, which is a different model and a different vendor, and
 the advisor's function is verifying reports against the repo rather than reviewing code. **The
