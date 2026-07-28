@@ -259,10 +259,19 @@ unit-pinned in `codec.rs` — so this is evidence completion, not redesign.
 - **CI evidence.** Run 30329679255 is green across every job, including
   `store · native Secret Service backend`: the provisioning gate resolved the
   default collection (`/org/freedesktop/secrets/collection/login`) and both
-  live-backend tests passed against real gnome-keyring. Native credential
-  backend conformance is therefore **one of three platforms** (Linux), up
-  from zero when this PR opened. Windows and macOS remain unprovisioned, and
-  Amendment 2 §G's zero-of-three record was accurate at writing.
+  live-backend tests passed against real gnome-keyring. **Correction
+  (2026-07-28, shutdown review):** this review originally counted that as
+  "one of three platforms" of native-backend conformance. It is not.
+  ADR-0007's named conformance evidence is
+  `store_release_uses_only_the_target_native_credential_backend`, which runs
+  "in release CI on Windows, macOS, and Linux" — and that test does not
+  exist anywhere in this PR (its deferral IS recorded in the tests.rs
+  header, unlike R2's silent absence). What the green job demonstrates is
+  Linux live-backend execution in **debug** CI, which is real and new, and
+  is the `store::credentials` ignored-test coverage the job was built to
+  provide. The release-CI conformance count remains **zero of three
+  platforms**, exactly as Amendment 2 §G records; the phrasing error was
+  this reviewer's, and §G was right.
 
 ## Decisions required from charge
 
