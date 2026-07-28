@@ -21,9 +21,12 @@
 //!   sqlx's own VersionMissing / VersionMismatch / dirty-state / locking
 //!   behavior — sqlx's checks are not bypassed, they are preceded.
 //! - Bounds: 60s lock acquisition (`lock_timeout`), 300s per statement
-//!   (`statement_timeout`), plus a tokio backstop over the whole run. A
-//!   timeout is fatal; a second runner behind a held lock fails closed
-//!   instead of hanging.
+//!   (`statement_timeout`), plus a tokio backstop over the migrator apply
+//!   phase (`run_direct`). The tokio backstop begins only at `run_direct`;
+//!   pool acquisition, session setup, advisory-lock acquisition, and
+//!   preflight precede it and are bounded by the server-side settings, not
+//!   by the backstop (docs/issues/013, finding 3). A timeout is fatal; a
+//!   second runner behind a held lock fails closed instead of hanging.
 //! - Exit cleanup is unconditional: `pg_advisory_unlock_all()` plus
 //!   `RESET` of every session setting on success AND error alike
 //!   (sqlx's `run_direct` leaks its advisory hold on every error path,
@@ -71,8 +74,9 @@ pub enum MigrateError {
     Db(#[from] sqlx::Error),
     #[error("sqlx migrator error: {0}")]
     Sqlx(#[from] sqlx::migrate::MigrateError),
-    /// The tokio backstop over the whole run fired. The statement-level
-    /// bounds (lock_timeout/statement_timeout) should fire first; this is
+    /// The tokio backstop fired. It covers only the migrator apply phase
+    /// (`run_direct`); the statement-level bounds
+    /// (lock_timeout/statement_timeout) should fire first; this is
     /// fail-closed defense in depth.
     #[error("migration run exceeded its overall bound of {0:?} (ADR-0006 §1)")]
     Timeout(Duration),
@@ -85,7 +89,7 @@ pub async fn migrate(pool: &PgPool) -> Result<(), MigrateError> {
 }
 
 /// The margin added to the statement-level bounds when computing the
-/// tokio backstop over the whole run.
+/// tokio backstop over the apply phase.
 const BACKSTOP_MARGIN_SECS: u64 = 60;
 
 /// The tokio backstop over the whole apply: lock bound + per-migration

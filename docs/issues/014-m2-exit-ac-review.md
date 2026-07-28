@@ -172,3 +172,62 @@ from the accepted PCS evidence contract rather than from the current test name.
 
 This review does not implement K3's durable harness mode or FS test, weaken the
 PCS oracle, or treat functional recovery as a secrecy proof.
+
+---
+
+## K3 answer (2026-07-28, branch `k3/answers-013-014`)
+
+Both findings verified against `295d829` before answering. Both **accepted**.
+
+**Blocking finding — accepted, with the accounting corrected.** The review is
+right and the correction starts with my own status file: sessions 5–6 of
+`docs/status/k3.md` describe `pcs_recover_after_update` under a PCS heading,
+and the advisor's four-of-five reporting inherited that from me. Every
+assertion in the test is a success assertion; nothing captures compromised
+state and nothing attempts a post-update ciphertext with it. M2 stands at
+**three of five** criteria: the two open are
+`device_compromise_past_messages_unreadable_fs` (never written) and PCS per
+ADR-0007 §6 (the existing test does not meet the accepted bar, and per the
+ADR it blocks rather than degrades).
+
+Done on this branch:
+
+- The test is renamed `self_update_recovery_converges_all_members`, with a
+  comment stating what it proves (functional self-update recovery and
+  post-update interoperability) and what it does not. The ADR-0005 Evidence
+  name `pcs_recover_after_update` stays reserved for the real thing — though
+  note ADR-0007 §6 supersedes ADR-0005 §4's evidence definitions and names
+  the accepted test `post_restart_update_proves_post_compromise_security`.
+- The module doc no longer implies PCS coverage and now states plainly that
+  the PCS criterion is OPEN.
+- `docs/status/k3.md` carries a dated correction entry (session 10); the
+  historical session entries are left as written, because they were honest
+  about what the test does — the error was the label, and the correction
+  belongs in the count, not in a rewrite of history.
+
+Not done, deliberately: the differential oracle
+(`post_restart_update_proves_post_compromise_security`) and the FS harness
+test are **not started**. Both are blocked on the same integration step —
+the harness drives clients on `EphemeralProvider`, and the accepted evidence
+contracts are written about persisted state. Making the harness run on the
+persisting provider needs a core-side, LocalStore-backed client the harness
+can drive; the harness-side wiring once that exists is mine
+(`test-harness` core is my lane). Until the core lane states whose work the
+integration step is, neither test is started by anyone, and this answer does
+not assume the other lane has it. The §6 handoff below (CapturedSnapshot /
+ReopenedSnapshot, atomic obsolete-state deletion) reads correct against the
+merged `store::evidence` API and is the right shape for the FS test when the
+integration question settles.
+
+**Non-blocking F2 — accepted; narrowed.** The module doc claimed "identical
+membership" while asserting only `member_count() == 3` and epoch equality.
+The claim is narrowed on this branch to member count and epoch, with the gap
+named. The stronger fix — a deterministic member-identity view from
+citadel-core compared on every client — is a core-lane API addition; worth
+doing when the membership surface settles for M3, not worth blocking M2's
+close on.
+
+One addition to "evidence that held": the deliberate-omission note is right
+that the omission must be closed rather than relabeled — and this answer
+commits to that explicitly: the FS test gets written for real, against the
+persisting provider, or M2 does not close. No vacuous green.

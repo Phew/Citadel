@@ -4,16 +4,26 @@
 //! verification against the live log (INV-4).
 //!
 //! - `f2_three_client_dm_creation` — create + KT-verified join across 3
-//!   clients; all converge on identical membership and epoch.
+//!   clients; all converge on the same member COUNT and epoch. Membership
+//!   identity is not compared: three different three-member trees at one
+//!   epoch would satisfy these assertions (docs/issues/014). Comparing full
+//!   member identity needs a deterministic membership view from citadel-core,
+//!   which does not exist yet.
 //! - `f4_send_receive_roundtrip` — application messages over REST submit,
 //!   received via WS fanout AND via `GET ?after=` sync; the wire carries
 //!   only ciphertext.
 //! - `no_plaintext_scan_delivery_tables` — canary plaintext through the F4
 //!   send path; zero hits in the delivery tables (and the fetched wire
 //!   envelope carries no encoding of it), with non-vacuous coverage.
-//! - `pcs_recover_after_update` — a member's self-update commit flows
-//!   through the live delivery path; every member merges it, the epoch
-//!   advances everywhere, and post-update messages round-trip.
+//! - `self_update_recovery_converges_all_members` — a member's self-update
+//!   commit flows through the live delivery path; every member merges it,
+//!   the epoch advances everywhere, and post-update messages round-trip.
+//!   This is a recovery/convergence test: no compromised pre-update state is
+//!   captured and no oracle attempts the post-update ciphertext, so it
+//!   proves functional self-update recovery, NOT post-compromise security
+//!   (docs/issues/014). The PCS evidence ADR-0007 §6 requires
+//!   (`post_restart_update_proves_post_compromise_security`, the `mls-spec`/
+//!   AWS-LC differential oracle) is unwritten; M2's PCS criterion is OPEN.
 //! - `adversarial_ds_swapped_keypackage_rejected` — a genuinely dishonest
 //!   server (live HTTP proxy rewriting the KeyPackage fetch, see
 //!   `test_harness::dishonest`) serves a swapped package claiming the
@@ -392,13 +402,17 @@ async fn no_plaintext_scan_delivery_tables() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "requires live docker compose stack; CI compose-smoke job runs it"]
-async fn pcs_recover_after_update() -> Result<()> {
-    let (clients, verifier) = provision("pcs", 3).await?;
+// Renamed from `pcs_recover_after_update` (docs/issues/014): every assertion
+// here is a success assertion — a liveness proof of the self-update path, not
+// a PCS proof. The name now says what the test is, and the ADR-0005 Evidence
+// name stays reserved for the differential PCS oracle that is still unwritten.
+async fn self_update_recovery_converges_all_members() -> Result<()> {
+    let (clients, verifier) = provision("self-update", 3).await?;
     let mut est = establish_group(&clients, &verifier).await?;
     let gid = est.group_id;
     let epoch_before = est.groups[0].epoch();
 
-    // Baseline: the "compromised" member B can still transact pre-update.
+    // Baseline: member B can still transact pre-update.
     clients[1]
         .send_text(&mut est.groups[1], gid, b"pre-update baseline")
         .await?;
@@ -473,7 +487,7 @@ async fn pcs_recover_after_update() -> Result<()> {
         assert_eq!(group.epoch(), prepared.proposed_epoch());
     }
     clients[0]
-        .send_text(&mut est.groups[0], gid, b"post-update secure again")
+        .send_text(&mut est.groups[0], gid, b"post-update traffic round-trips")
         .await?;
     for i in [1usize, 2] {
         let envelope = dm::recv_foreign_message_for(
@@ -491,7 +505,7 @@ async fn pcs_recover_after_update() -> Result<()> {
             )
             .map_err(|e| anyhow::anyhow!("receive: {e}"))?
         {
-            ReceiveOutcome::Application(p) => assert_eq!(p, b"post-update secure again"),
+            ReceiveOutcome::Application(p) => assert_eq!(p, b"post-update traffic round-trips"),
             other => bail!("expected application, got {other:?}"),
         }
     }

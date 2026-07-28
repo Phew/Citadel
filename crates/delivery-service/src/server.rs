@@ -91,6 +91,12 @@ fn store_error(err: StoreError) -> ApiError {
         StoreError::UnsupportedVersion { .. } => {
             error_response(ErrorCode::UnsupportedVersion, &err.to_string())
         }
+        StoreError::CorruptRow(msg) => {
+            // Detail stays server-side: a corrupt row is our problem, not
+            // something the client can act on.
+            tracing::error!(detail = %msg, "stored row failed validation");
+            error_response(ErrorCode::Internal, "internal error")
+        }
         StoreError::Db(e) => {
             tracing::error!(error = %e, "message store error");
             error_response(ErrorCode::Internal, "internal error")

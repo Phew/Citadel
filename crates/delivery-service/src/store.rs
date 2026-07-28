@@ -51,6 +51,13 @@ pub enum StoreError {
     /// downgrade).
     #[error("unsupported wire version {found}; this build speaks {supported}")]
     UnsupportedVersion { found: u16, supported: u16 },
+    /// A stored row failed validation on decode. The schema's CHECK
+    /// constraints are evidence, not a guarantee: corruption, operator
+    /// writes, or a future migration must fail closed here rather than
+    /// panic a request task or widen a malformed negative into a large
+    /// wire value (docs/issues/013, finding 2). Maps to ErrorCode::Internal.
+    #[error("stored row failed validation: {0}")]
+    CorruptRow(String),
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -80,15 +87,26 @@ fn kind_to_text(kind: EnvelopeKind) -> Result<&'static str, StoreError> {
     }
 }
 
-fn kind_from_text(text: &str) -> EnvelopeKind {
+fn kind_from_text(text: &str) -> Result<EnvelopeKind, StoreError> {
     match text {
-        "application" => EnvelopeKind::Application,
-        "proposal" => EnvelopeKind::Proposal,
-        "commit" => EnvelopeKind::Commit,
-        "welcome" => EnvelopeKind::Welcome,
-        // The schema CHECK constraint makes anything else unreachable.
-        other => panic!("group_messages.kind is CHECK-constrained; got {other:?}"),
+        "application" => Ok(EnvelopeKind::Application),
+        "proposal" => Ok(EnvelopeKind::Proposal),
+        "commit" => Ok(EnvelopeKind::Commit),
+        "welcome" => Ok(EnvelopeKind::Welcome),
+        // The schema CHECK constraint makes anything else unexpected, not
+        // unreachable: fail closed instead of panicking (docs/issues/013).
+        other => Err(StoreError::CorruptRow(format!(
+            "group_messages.kind is CHECK-constrained; got {other:?}"
+        ))),
     }
+}
+
+/// Checked read-side conversion of a non-negative i64 column to its u64 wire
+/// value. A negative stored value is corruption, not a large number.
+fn u64_from_i64_column(value: i64, column: &'static str) -> Result<u64, StoreError> {
+    u64::try_from(value).map_err(|_| {
+        StoreError::CorruptRow(format!("group_messages.{column} is negative: {value}"))
+    })
 }
 
 /// Unix-milliseconds rendering of a row's server_ts, for the wire contract.
@@ -124,6 +142,11 @@ pub async fn submit_message(
         // group_messages.epoch is NOT NULL, and ADR-0005 §1 pins the client
         // to always declare its current epoch — reject rather than default.
         StoreError::InvalidRequest("envelope.epoch is required on submit".into())
+    })?;
+    // Reject before the insert: an out-of-range client u64 must fail here,
+    // not wrap negative via `as i64` and persist (docs/issues/013).
+    let epoch_i64 = i64::try_from(epoch).map_err(|_| {
+        StoreError::InvalidRequest("envelope.epoch exceeds the storable range".into())
     })?;
     let kind_text = kind_to_text(env.kind)?;
     // Decode once here and bind the raw bytes; the payload is opaque MLS
@@ -207,7 +230,7 @@ pub async fn submit_message(
     .fetch_optional(&mut *tx)
     .await?
     {
-        let response = replay_response(&row, gid);
+        let response = replay_response(&row, gid)?;
         tx.commit().await?;
         return Ok(SubmitOutcome::Replayed(response));
     }
@@ -220,7 +243,10 @@ pub async fn submit_message(
         .fetch_one(&mut *tx)
         .await?;
     let next_seq: i64 = row.get("next_seq");
-    let seq = next_seq + 1;
+    let seq = next_seq
+        .checked_add(1)
+        .ok_or_else(|| StoreError::CorruptRow("groups.next_seq is exhausted".into()))?;
+    let seq_u64 = u64_from_i64_column(seq, "seq")?;
     sqlx::query("UPDATE groups SET next_seq = $2 WHERE mls_group_id = $1")
         .bind(gid.as_uuid())
         .bind(seq)
@@ -242,7 +268,7 @@ pub async fn submit_message(
     .bind(message_id.as_uuid())
     .bind(gid.as_uuid())
     .bind(seq)
-    .bind(epoch as i64)
+    .bind(epoch_i64)
     .bind(kind_text)
     .bind(authed.as_uuid())
     .bind(req.idempotency_key)
@@ -260,7 +286,7 @@ pub async fn submit_message(
         .bind(req.idempotency_key)
         .fetch_one(pool)
         .await?;
-        return Ok(SubmitOutcome::Replayed(replay_response(&row, gid)));
+        return Ok(SubmitOutcome::Replayed(replay_response(&row, gid)?));
     };
     let server_ts: i64 = inserted.get("server_ts_ms");
 
@@ -290,11 +316,11 @@ pub async fn submit_message(
         message_id,
         group_id: gid,
         epoch,
-        seq: seq as u64,
+        seq: seq_u64,
         server_ts,
     };
     let mut fanout = env.clone();
-    fanout.seq = Some(seq as u64);
+    fanout.seq = Some(seq_u64);
     fanout.epoch = Some(epoch);
     fanout.sender_device_id = Some(authed);
     Ok(SubmitOutcome::Created(response, fanout))
@@ -338,37 +364,40 @@ pub async fn is_participant(
 }
 
 /// Build the replay response from a fetched group_messages row.
-fn replay_response(row: &sqlx::postgres::PgRow, gid: GroupId) -> SubmitMessageResponse {
+fn replay_response(
+    row: &sqlx::postgres::PgRow,
+    gid: GroupId,
+) -> Result<SubmitMessageResponse, StoreError> {
     let seq: i64 = row.get("seq");
     let epoch: i64 = row.get("epoch");
-    SubmitMessageResponse {
+    Ok(SubmitMessageResponse {
         message_id: MessageId::from_uuid(row.get("id")),
         group_id: gid,
-        epoch: epoch as u64,
-        seq: seq as u64,
+        epoch: u64_from_i64_column(epoch, "epoch")?,
+        seq: u64_from_i64_column(seq, "seq")?,
         server_ts: row.get("server_ts_ms"),
-    }
+    })
 }
 
 /// Map a stored row back onto the wire envelope: version pinned to
 /// WIRE_VERSION, seq/epoch/sender populated from the row, payload re-encoded
 /// as standard base64 (ADR-0005 §1: each synced envelope has
 /// seq/epoch/sender_device_id populated).
-fn envelope_from_row(row: &sqlx::postgres::PgRow, gid: GroupId) -> Envelope {
+fn envelope_from_row(row: &sqlx::postgres::PgRow, gid: GroupId) -> Result<Envelope, StoreError> {
     let seq: i64 = row.get("seq");
     let epoch: i64 = row.get("epoch");
     let kind: String = row.get("kind");
     let sender: Option<uuid::Uuid> = row.get("sender_device_id");
     let payload: Vec<u8> = row.get("payload_bytes");
-    Envelope {
+    Ok(Envelope {
         version: WIRE_VERSION,
-        kind: kind_from_text(&kind),
+        kind: kind_from_text(&kind)?,
         group_id: Some(gid),
-        epoch: Some(epoch as u64),
-        seq: Some(seq as u64),
+        epoch: Some(u64_from_i64_column(epoch, "epoch")?),
+        seq: Some(u64_from_i64_column(seq, "seq")?),
         sender_device_id: sender.map(DeviceId::from_uuid),
         payload_b64: B64.encode(payload),
-    }
+    })
 }
 
 const MESSAGE_COLUMNS: &str = "id, mls_group_id, seq, epoch, kind, sender_device_id, payload_bytes";
@@ -393,7 +422,10 @@ pub async fn fetch_messages(
 
     let has_more = rows.len() > MESSAGES_PAGE_LIMIT;
     let rows = &rows[..rows.len().min(MESSAGES_PAGE_LIMIT)];
-    let messages: Vec<Envelope> = rows.iter().map(|r| envelope_from_row(r, gid)).collect();
+    let messages: Vec<Envelope> = rows
+        .iter()
+        .map(|r| envelope_from_row(r, gid))
+        .collect::<Result<_, _>>()?;
     let next_after = messages
         .last()
         .and_then(|e| e.seq)
@@ -424,13 +456,15 @@ pub async fn undelivered_welcomes(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .iter()
+    rows.iter()
         .map(|r| {
             let gid = GroupId::from_uuid(r.get("mls_group_id"));
-            (MessageId::from_uuid(r.get("id")), envelope_from_row(r, gid))
+            Ok((
+                MessageId::from_uuid(r.get("id")),
+                envelope_from_row(r, gid)?,
+            ))
         })
-        .collect())
+        .collect::<Result<Vec<_>, StoreError>>()
 }
 
 /// Mark this device's pending welcome deliveries in `gids` delivered. Called
@@ -466,4 +500,38 @@ pub async fn mark_welcomes_delivered_for_groups(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// docs/issues/013 finding 2: row decoding fails closed — no panic, no
+    /// negative value widened into a large wire number.
+    #[test]
+    fn kind_decode_rejects_an_unexpected_stored_value_without_panicking() {
+        for valid in ["application", "proposal", "commit", "welcome"] {
+            assert!(kind_from_text(valid).is_ok(), "{valid}");
+        }
+        let err = kind_from_text("control").expect_err("control is not storable");
+        assert!(matches!(err, StoreError::CorruptRow(_)), "{err:?}");
+        let err = kind_from_text("garbage").expect_err("corruption must fail closed");
+        assert!(matches!(err, StoreError::CorruptRow(_)), "{err:?}");
+    }
+
+    #[test]
+    fn negative_stored_counters_are_corruption_not_large_wire_values() {
+        assert_eq!(u64_from_i64_column(0, "seq").expect("zero"), 0);
+        assert_eq!(u64_from_i64_column(7, "epoch").expect("positive"), 7);
+        let err = u64_from_i64_column(-1, "seq").expect_err("negative must fail closed");
+        assert!(matches!(err, StoreError::CorruptRow(_)), "{err:?}");
+    }
+
+    #[test]
+    fn an_out_of_range_client_epoch_is_rejected_before_the_insert() {
+        // The submit path converts with i64::try_from and rejects; pin the
+        // boundary the rejection is built on.
+        assert!(i64::try_from(i64::MAX as u64).is_ok());
+        assert!(i64::try_from(i64::MAX as u64 + 1).is_err());
+    }
 }
