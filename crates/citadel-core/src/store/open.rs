@@ -95,10 +95,19 @@ pub fn open_hardened(
 ) -> Result<Connection, StoreError> {
     let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        // Enforced by the unix VFS (`sqlite3.c:61796`, reached via
-        // SQLITE_OK_SYMLINK from os_unix's FullPathname). The Windows VFS does
-        // not report symlinks that way, which is why ProfilePaths::validate
-        // does the reparse-point check by path there.
+        // Enforced by the unix VFS only. `unixFullPathname` is the sole producer
+        // of SQLITE_OK_SYMLINK (`:44874`, returned at `:44897`), and the flag is
+        // honored in exactly one place, on receiving it (`:61795-61797`).
+        // `winFullPathname` (`:52228`) never returns it, so this flag is INERT on
+        // Windows and containment there rests on ProfilePaths::validate's
+        // by-path reparse-point check. See docs/issues/012.
+        //
+        // Line numbers are in `libsqlite3-sys-0.30.1/sqlcipher/sqlite3.c` — the
+        // SQLCipher 4.5.7 amalgamation this crate compiles, selected by that
+        // crate's `build.rs:143`. The package also ships an unrelated
+        // `sqlite3/sqlite3.c` whose line numbering differs by roughly 200 lines
+        // here; every `sqlite3.c` citation in this repository means the
+        // `sqlcipher/` tree.
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     if intent == OpenIntent::Create {
         flags |= OpenFlags::SQLITE_OPEN_CREATE;

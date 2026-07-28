@@ -30,7 +30,12 @@
 //! finding.
 
 use super::{require_32, CredentialStore, CredentialStoreError, SecretItem, SERVICE};
-use keyring::credential::{Credential, CredentialBuilderApi};
+// `default_credential_builder` returns `Box<CredentialBuilder>`, and
+// `CredentialBuilder` is the trait-object alias `dyn CredentialBuilderApi + Send
+// + Sync` (`keyring-3.6.3/src/credential.rs:183`). Methods on a trait object
+// resolve without the trait in scope, so importing `CredentialBuilderApi` here
+// is an unused import, not a required one.
+use keyring::credential::Credential;
 use keyring::secret_service::default_credential_builder;
 use keyring::Error as KeyringError;
 use zeroize::Zeroizing;

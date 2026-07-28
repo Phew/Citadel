@@ -21,7 +21,14 @@
 //! yet. Treat this file as unexercised until it does.
 
 use super::{require_32, CredentialStore, CredentialStoreError, SecretItem, SERVICE};
-use keyring::credential::{Credential, CredentialBuilderApi};
+// Same trait-object reasoning as the Secret Service adapter:
+// `keyring::macos::default_credential_builder` returns `Box<CredentialBuilder>`
+// (`keyring-3.6.3/src/macos.rs:179`), and `CredentialBuilder` is the alias
+// `dyn CredentialBuilderApi + Send + Sync` (`credential.rs:183`), so `.build()`
+// needs no trait import. The identical import on the Linux adapter was an
+// unused-import error under `-D warnings`; this one is corrected by inspection
+// against the pinned source, because no CI job compiles this file.
+use keyring::credential::Credential;
 use keyring::macos::default_credential_builder;
 use keyring::Error as KeyringError;
 use zeroize::Zeroizing;
