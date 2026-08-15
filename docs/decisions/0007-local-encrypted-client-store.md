@@ -1436,6 +1436,20 @@ three-platform requirement, treat a local run as CI, or mark the criterion
 complete. The production release-conformance jobs remain open on all three
 targets.
 
+### H. The v1 corpus lands now; test v2 codec migration has a release-forcing gate
+
+The committed `citadel-openmls-json-v1` corpus and its manifest enumerate the
+storage entities written by the evidence operation matrix and pin their exact
+bytes. `store_codec_v1_roundtrips_golden_corpus_and_migrates` checks that
+manifest against the independently observed provider rows, rejects missing or
+unlisted blobs, decodes every committed value, and byte-compares the current v1
+encoding with the committed representation.
+
+With charge's sign-off on 2026-08-14, the single-transaction test v2 codec
+migration is deferred. It remains required **before any release that ships a
+codec version bump**. The committed v1 corpus is compatibility evidence, not a
+substitute for that migration test.
+
 ## Primary sources
 
 - [RFC 9420: The Messaging Layer Security Protocol](https://www.rfc-editor.org/rfc/rfc9420.html)

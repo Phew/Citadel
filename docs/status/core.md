@@ -29,16 +29,24 @@ corrects the prior milestone count. **M2 is three of five, not four of five.**
 charge accepted Amendment 2 on 2026-08-14 after K3 completed its blocking review. The
 acceptance is committed on PR #69 but has no force on `main` unless and until that PR merges.
 
-## 2026-08-14 resume update
+## 2026-08-14 R1-R3 implementation update
 
 - Charge accepted ADR-0007 Amendment 2. This branch records the acceptance; it is not live on
   `main` before PR #69 merges.
 - R1 covers both superseded comments. The `receive` comment now states the complete-wire
   fingerprint and single actor-side parse rationale from §D. The `new_key_package` comment now
   states the §B.1 lifecycle gate across generation, publication, and fetch.
-- R2 remains unresolved: Core must implement
-  `store_whole_file_rollback_boundary_is_explicit`, or charge must approve a deferral behind a
-  named forcing gate. PR #69 remains blocked and must not merge or be described as ready.
+- R2 is implemented. `store_whole_file_rollback_boundary_is_explicit` replaces the complete
+  encrypted SQLite file set with an older valid snapshot, reopens it through `LocalStore`,
+  passes SQLCipher integrity verification, and reads the older KT checkpoint. This pins the
+  limitation that authenticated pages do not establish snapshot freshness.
+- R3's committed v1 corpus is implemented. Its manifest enumerates the exact storage entities
+  written by the evidence operation matrix, the test rejects missing and unlisted blobs, and
+  every current v1 encoding is byte-compared with the committed bytes. With charge's sign-off,
+  the single-transaction test v2 codec migration is deferred **before any release that ships a codec
+  version bump**; the same forcing gate is recorded in ADR-0007 and the test absence list.
+- PR #69 remains blocked pending K3's re-review of R1 through R3. Core must not merge it or
+  describe it as ready before that review.
 - M2 remains **three of five**. `pcs_recover_after_update` has only success assertions: no
   pre-update snapshot, attacker state, or required decryption failure. Persisted-state FS and
   the captured-state differential PCS criterion remain open.
@@ -125,6 +133,7 @@ checkpoint call, no vacuum, and no test-only cleanup, deliberately.
 - `store_receive_is_atomic_with_plaintext_and_mls_state`
 - `store_restart_restores_group_and_pending_transmission_exactly_once`
 - `store_restart_preserves_kt_anti_rollback_checkpoint`
+- `store_whole_file_rollback_boundary_is_explicit`
 - `store_migrations_are_encrypted_transactional_and_monotonic`
 - `store_clean_open_does_not_run_a_full_integrity_scan`
 - `store_profile_destruction_revokes_keys_and_reports_residual_files`
@@ -511,10 +520,10 @@ but it does not satisfy PLAN §9's harness criterion.
 
 ---
 
-## Shutdown snapshot 2026-07-28
+## Historical shutdown snapshot 2026-07-28
 
-This section supersedes earlier queue and branch-state paragraphs where they
-conflict. It is written for a reader with no session memory.
+This historical section is superseded by the 2026-08-14 R1-R3 implementation update where
+the two conflict. It is retained to preserve the review trail.
 
 ### Current evidence and milestone state
 
@@ -552,7 +561,7 @@ conflict. It is written for a reader with no session memory.
   differential PCS criterion.
 - `store_whole_file_rollback_boundary_is_explicit` does not exist.
 - `store_codec_v1_roundtrips_golden_corpus_and_migrates` ran, but the named
-  committed corpus and transactional test-v2 migration do not exist. The test
+  committed corpus and transactional test v2 codec migration do not exist. The test
   proves only current-build determinism and round-trip behavior.
 - `store_release_excludes_secret_evidence_paths`, the three-platform release
   graph checks, and the all-desktop-target hot-path benchmark do not exist.
@@ -651,7 +660,7 @@ as acceptance.
 |---|---|---|
 | R1: correct both superseded `actor.rs` premises | Core | Before PR #69 K3 re-review and merge, after charge's Amendment 2 ruling |
 | R2: implement `store_whole_file_rollback_boundary_is_explicit`, or record a charge-approved narrowing | Core implementation; charge decides any narrowing | Before PR #69 merge |
-| R3: commit the schema-complete v1 corpus and implement the transactional test-v2 migration, or record a charge-approved narrowing | Core implementation; charge decides any narrowing | Before PR #69 merge |
+| R3: commit the schema-complete v1 corpus and implement the transactional test v2 codec migration, or record a charge-approved narrowing | Core implementation; charge decides any narrowing | Before PR #69 merge |
 | Amendment 2 acceptance | charge | Before R1 is finalized and before PR #69 merge |
 | ADR-0005 Amendment 2 acceptance from `k3/answers-013-014` | charge | Before the follow-up branch merges or Subscribe acknowledgment is treated as accepted text |
 | Re-review R1-R3 | K3 | After Core pushes the complete fixes, before PR #69 merge |

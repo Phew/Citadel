@@ -1,8 +1,6 @@
 //! ADR-0007 Evidence, for the tests that can run without release CI.
 //!
-//! Names match the ADR's Evidence list so a reader can diff this file against
-//! it. Four named tests are **not** here, and pretending otherwise would be the
-//! defect this project keeps catching:
+//! Names match the ADR Evidence list; four named tests and one half of `store_codec_v1_roundtrips_golden_corpus_and_migrates` are absent:
 //!
 //! - `store_release_uses_only_the_target_native_credential_backend`, and the
 //!   three-desktop-target half of `store_release_uses_only_pinned_sqlcipher`,
@@ -16,6 +14,7 @@
 //!   `mls-spec` / AWS-LC differential oracle, which nobody has built yet.
 //! - `store_hot_path_latency_is_measured_on_all_desktop_targets` needs the
 //!   three-target benchmark recipe.
+//! - Its single-transaction test v2 codec migration is deferred with charge's sign-off before any release that ships a codec version bump.
 //!
 //! Everything else below runs against real SQLCipher and the real OpenMLS
 //! provider, on a temporary profile directory with a credential-store double.
@@ -35,16 +34,31 @@ use super::paths::ProfilePaths;
 use super::provider::StoreProvider;
 use super::schema::{meta_key, read_metadata, APP_SCHEMA_VERSION, SCHEMA_SENTINEL};
 use super::{LocalStore, OperationOutcome};
-use crate::crypto::EphemeralProvider;
+use crate::crypto::{EphemeralProvider, CIPHERSUITE, MAX_PAST_EPOCHS};
 use crate::group::{DmGroup, GroupError, ReceiveOutcome};
 use crate::identity::DeviceIdentity;
 use crate::testing::{make_identity, AllowList};
+use citadel_proto::credential::{
+    DeviceCredential, DeviceCredentialTbs, DevicePublicKey, Signature as ProtoSignature,
+};
 use citadel_proto::ids::GroupId;
+use citadel_proto::IdentityPublicKey;
+use ed25519_dalek::{Signer as DalekSigner, SigningKey};
 use openmls::framing::errors::{MessageDecryptionError, SecretTreeError};
 use openmls::prelude::*;
+use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::Codec;
+use openmls_traits::crypto::OpenMlsCrypto;
+use openmls_traits::random::OpenMlsRand;
+use openmls_traits::OpenMlsProvider;
+use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
+use uuid::Uuid;
+use zeroize::Zeroizing;
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -77,6 +91,111 @@ impl Fixture {
 
 fn local_identity() -> Arc<DeviceIdentity> {
     Arc::new(make_identity().identity)
+}
+
+struct CorpusRand(AtomicUsize);
+
+impl CorpusRand {
+    fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    fn fill(&self, mut destination: &mut [u8]) {
+        while !destination.is_empty() {
+            let counter = self.0.fetch_add(1, Ordering::Relaxed);
+            let mut input = counter.to_be_bytes().to_vec();
+            input.extend_from_slice(b"citadel-storage-codec-v1-corpus");
+            let block = RustCrypto::default()
+                .hash(HashType::Sha2_256, &input)
+                .expect("corpus hash");
+            let length = destination.len().min(block.len());
+            destination[..length].copy_from_slice(&block[..length]);
+            destination = &mut destination[length..];
+        }
+    }
+}
+
+impl OpenMlsRand for CorpusRand {
+    type Error = Infallible;
+
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error> {
+        let mut bytes = [0; N];
+        self.fill(&mut bytes);
+        Ok(bytes)
+    }
+
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error> {
+        let mut bytes = vec![0; len];
+        self.fill(&mut bytes);
+        Ok(bytes)
+    }
+}
+
+struct CorpusProvider<'a> {
+    crypto: RustCrypto,
+    rand: CorpusRand,
+    storage: openmls_sqlite_storage::SqliteStorageProvider<
+        CitadelOpenMlsJsonCodecV1,
+        &'a rusqlite::Connection,
+    >,
+}
+
+impl<'a> CorpusProvider<'a> {
+    fn new(connection: &'a rusqlite::Connection) -> Self {
+        Self {
+            crypto: RustCrypto::default(),
+            rand: CorpusRand::new(),
+            storage: openmls_sqlite_storage::SqliteStorageProvider::new(connection),
+        }
+    }
+}
+
+impl<'a> OpenMlsProvider for CorpusProvider<'a> {
+    type CryptoProvider = RustCrypto;
+    type RandProvider = CorpusRand;
+    type StorageProvider = openmls_sqlite_storage::SqliteStorageProvider<
+        CitadelOpenMlsJsonCodecV1,
+        &'a rusqlite::Connection,
+    >;
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.rand
+    }
+}
+
+fn corpus_identity() -> Arc<DeviceIdentity> {
+    let identity_key = SigningKey::from_bytes(&[0x11; 32]);
+    let device_key = SigningKey::from_bytes(&[0x22; 32]);
+    let identity_pubkey = IdentityPublicKey(identity_key.verifying_key().to_bytes());
+    let device_pubkey = DevicePublicKey(device_key.verifying_key().to_bytes());
+    let tbs = DeviceCredentialTbs {
+        account_id: citadel_proto::ids::AccountId::from_uuid(Uuid::from_bytes([0x33; 16])),
+        device_id: citadel_proto::ids::DeviceId::from_uuid(Uuid::from_bytes([0x44; 16])),
+        identity_pubkey,
+        device_pubkey,
+        issued_at: 1_700_000_000,
+    };
+    let signature = identity_key.sign(&tbs.signing_input());
+    let credential = DeviceCredential {
+        tbs,
+        signature: ProtoSignature(signature.to_bytes()),
+    };
+    Arc::new(
+        DeviceIdentity::from_parts(
+            credential,
+            Zeroizing::new(device_key.to_bytes()),
+            device_key.verifying_key().to_bytes(),
+        )
+        .expect("deterministic corpus identity"),
+    )
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -737,34 +856,48 @@ fn the_outcome_ring_expires_payloads_without_ever_reapplying_the_operation() {
 fn store_codec_v1_roundtrips_golden_corpus_and_migrates() {
     let fixture = Fixture::new();
     let store = fixture.open().expect("open");
-    let identity = local_identity();
-    let group_id = GroupId::new();
-    store
-        .create_group(
-            OperationId::generate().expect("id"),
-            identity.clone(),
-            group_id,
-            None,
-        )
-        .expect("create");
-    store
-        .send(
-            OperationId::generate().expect("id"),
-            identity.clone(),
-            group_id,
-            b"corpus".to_vec(),
-        )
-        .expect("send");
-    // A KeyPackage as well, so the corpus covers the one-time-pool entities and
-    // their private keys rather than group data alone.
-    store.new_key_package(identity).expect("key package");
     let paths = store.paths().clone();
     let key = store.database_encryption_key_for_evidence().expect("key");
     store.close().expect("close");
 
     let key_owned = super::key::DatabaseEncryptionKey::from_bytes(key);
-    let connection =
+    let mut connection =
         open_hardened(&paths.database(), &key_owned, OpenIntent::Existing).expect("reopen");
+    let identity = corpus_identity();
+    let group_id = GroupId::from_uuid(Uuid::from_bytes([0x55; 16]));
+    {
+        let transaction = connection.transaction().expect("corpus transaction");
+        {
+            let provider = CorpusProvider::new(&transaction);
+            let config = MlsGroupCreateConfig::builder()
+                .ciphersuite(CIPHERSUITE)
+                .use_ratchet_tree_extension(true)
+                .max_past_epochs(MAX_PAST_EPOCHS)
+                .lifetime(Lifetime::init(1_600_000_000, 1_900_000_000))
+                .build();
+            let mut group = MlsGroup::new_with_group_id(
+                &provider,
+                &identity.signer,
+                &config,
+                openmls::prelude::GroupId::from_slice(group_id.as_uuid().as_bytes()),
+                identity.credential_with_key.clone(),
+            )
+            .expect("create");
+            group
+                .create_message(&provider, &identity.signer, b"corpus")
+                .expect("send");
+            KeyPackage::builder()
+                .key_package_lifetime(Lifetime::init(1_600_000_000, 1_900_000_000))
+                .build(
+                    CIPHERSUITE,
+                    &provider,
+                    &identity.signer,
+                    identity.credential_with_key.clone(),
+                )
+                .expect("key package");
+        }
+        transaction.commit().expect("commit corpus");
+    }
 
     // The identifier and version tuple were written BEFORE the first OpenMLS
     // record, so they are readable and exact.
@@ -795,11 +928,129 @@ fn store_codec_v1_roundtrips_golden_corpus_and_migrates() {
             .expect("collect");
         rows
     };
-    assert!(
-        rows.len() >= 5,
-        "a created group must have written several provider rows, got {}",
-        rows.len()
+    let corpus_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("storage-codec");
+    let manifest = std::fs::read_to_string(corpus_root.join("manifest.tsv"))
+        .expect("read committed codec manifest");
+    let mut lines = manifest.lines();
+    assert_eq!(lines.next(), Some("format_version\t1"));
+    let expected_codec = format!("codec_id\t{CODEC_ID}");
+    assert_eq!(lines.next(), Some(expected_codec.as_str()));
+    let expected_versions = format!("bound_versions\t{CODEC_BOUND_VERSIONS}");
+    assert_eq!(lines.next(), Some(expected_versions.as_str()));
+    let mut corpus = BTreeMap::new();
+    let mut corpus_paths = BTreeSet::new();
+    for line in lines {
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields.len(), 4, "malformed corpus manifest line: {line}");
+        assert_eq!(fields[0], "entity", "unknown manifest record: {line}");
+        assert!(!fields[1].is_empty(), "empty corpus entity: {line}");
+        let relative = PathBuf::from(fields[2]);
+        assert!(
+            relative.is_relative()
+                && relative
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+            "corpus path must be normalized and relative: {relative:?}"
+        );
+        assert!(
+            corpus_paths.insert(relative.clone()),
+            "duplicate corpus path: {relative:?}"
+        );
+        assert!(
+            corpus
+                .insert(
+                    fields[1].to_string(),
+                    (
+                        relative,
+                        fields[3].parse::<usize>().unwrap_or_else(|error| panic!(
+                            "invalid corpus length in {line}: {error}"
+                        )),
+                    ),
+                )
+                .is_none(),
+            "duplicate corpus entity: {}",
+            fields[1]
+        );
+    }
+
+    let mut observed = rows
+        .iter()
+        .map(|(data_type, bytes)| (format!("group_data.{data_type}"), bytes.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for (entity, table, value_column) in [
+        ("encryption_key_pair", "openmls_encryption_keys", "key_pair"),
+        ("epoch_key_pairs", "openmls_epoch_keys_pairs", "key_pairs"),
+        ("key_package", "openmls_key_packages", "key_package"),
+        ("own_leaf_node", "openmls_own_leaf_nodes", "leaf_node"),
+        ("proposal", "openmls_proposals", "proposal"),
+        ("psk", "openmls_psks", "psk_bundle"),
+        (
+            "signature_key_pair",
+            "openmls_signature_keys",
+            "signature_key",
+        ),
+    ] {
+        let count: i64 = connection
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or_else(|error| panic!("{table}: {error}"));
+        if count > 0 {
+            assert_eq!(
+                count, 1,
+                "the corpus operation matrix wrote {count} {entity} rows"
+            );
+            let bytes = connection
+                .query_row(&format!("SELECT {value_column} FROM {table}"), [], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })
+                .unwrap_or_else(|error| panic!("read {entity}: {error}"));
+            assert!(
+                observed.insert(entity.to_string(), bytes).is_none(),
+                "duplicate observed entity: {entity}"
+            );
+        }
+    }
+    assert_eq!(
+        observed.keys().cloned().collect::<BTreeSet<_>>(),
+        corpus.keys().cloned().collect(),
+        "the committed manifest must enumerate the exact storage entities written by the operation matrix"
     );
+
+    let actual_files = std::fs::read_dir(corpus_root.join("v1"))
+        .expect("read committed corpus directory")
+        .map(|entry| PathBuf::from("v1").join(entry.expect("corpus directory entry").file_name()))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_files, corpus_paths,
+        "the corpus must contain no missing or unlisted blobs"
+    );
+    for (entity, (relative, expected_length)) in &corpus {
+        let bytes = std::fs::read(corpus_root.join(relative))
+            .unwrap_or_else(|error| panic!("read {entity} corpus bytes: {error}"));
+        assert!(!bytes.is_empty(), "{entity} corpus bytes are empty");
+        assert_eq!(
+            bytes.len(),
+            *expected_length,
+            "{entity} corpus length changed"
+        );
+        assert_eq!(
+            observed.get(entity),
+            Some(&bytes),
+            "{entity} differs from the deterministic current OpenMLS write"
+        );
+        let value: serde_json::Value = CitadelOpenMlsJsonCodecV1::from_slice(&bytes)
+            .unwrap_or_else(|error| panic!("{entity} committed bytes do not decode: {error}"));
+        let encoded = CitadelOpenMlsJsonCodecV1::to_vec(&value)
+            .unwrap_or_else(|error| panic!("{entity} did not encode: {error}"));
+        assert_eq!(
+            encoded, bytes,
+            "{entity} changed from the committed v1 byte representation"
+        );
+    }
     for (data_type, bytes) in &rows {
         let value: serde_json::Value = CitadelOpenMlsJsonCodecV1::from_slice(bytes)
             .unwrap_or_else(|error| panic!("{data_type} did not decode with v1: {error}"));
@@ -1068,6 +1319,128 @@ fn store_restart_preserves_kt_anti_rollback_checkpoint() {
     assert_eq!(after.tree_size, 250);
     assert_eq!(after.root_hash, vec![0xBB; 32]);
     store.close().expect("close");
+}
+
+#[test]
+fn store_whole_file_rollback_boundary_is_explicit() {
+    let fixture = Fixture::new();
+    let old_size = 100;
+    let old_hash = vec![0xAA; 32];
+    let new_size = 250;
+    let new_hash = vec![0xBB; 32];
+
+    let store = fixture.open().expect("create");
+    store
+        .accept_kt_head(
+            OperationId::generate().expect("id"),
+            old_size,
+            old_hash.clone(),
+        )
+        .expect("accept old checkpoint");
+    let paths = store.paths().clone();
+    let key = store.database_encryption_key_for_evidence().expect("key");
+    store.close().expect("close before snapshot");
+    let snapshot = CapturedSnapshot::capture_files(
+        &paths,
+        key,
+        &fixture.dir.path().join("older-complete-snapshot"),
+    )
+    .expect("capture old complete file set");
+    assert!(
+        snapshot
+            .copied_files()
+            .iter()
+            .any(|path| path == &snapshot.paths().database()),
+        "the rollback snapshot must contain the encrypted database"
+    );
+    assert!(
+        !snapshot.has_live_rollback_journal(),
+        "the rollback oracle requires a quiescent snapshot"
+    );
+
+    let store = fixture.open().expect("reopen before advancement");
+    store
+        .accept_kt_head(
+            OperationId::generate().expect("id"),
+            new_size,
+            new_hash.clone(),
+        )
+        .expect("advance checkpoint");
+    let current = store
+        .kt_checkpoint()
+        .expect("read current")
+        .expect("present");
+    assert_eq!(
+        (current.tree_size, current.root_hash),
+        (new_size, new_hash.clone())
+    );
+    store.close().expect("close advanced store");
+
+    let store = fixture.open().expect("confirm advanced state persisted");
+    let persisted = store
+        .kt_checkpoint()
+        .expect("read persisted current")
+        .expect("present");
+    assert_eq!(
+        (persisted.tree_size, persisted.root_hash),
+        (new_size, new_hash)
+    );
+    store.close().expect("close before rollback restore");
+
+    let file_set = |profile: &ProfilePaths| {
+        profile
+            .all_files()
+            .into_iter()
+            .filter(|path| path != &profile.lock() && path.exists())
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .expect("profile file name")
+                    .to_string_lossy()
+                    .into_owned();
+                let bytes = std::fs::read(&path).expect("read profile file");
+                (name, bytes)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let saved_files = file_set(snapshot.paths());
+    for path in paths
+        .all_files()
+        .into_iter()
+        .filter(|path| path != &paths.lock())
+    {
+        if path.exists() {
+            std::fs::remove_file(&path).expect("remove current snapshot member");
+        }
+    }
+    for source in snapshot.copied_files() {
+        let target = paths
+            .root()
+            .join(source.file_name().expect("snapshot file name"));
+        std::fs::copy(source, target).expect("restore snapshot member");
+    }
+    assert_eq!(
+        file_set(&paths),
+        saved_files,
+        "rollback setup must replace the complete SQLite file set byte for byte"
+    );
+
+    let rolled_back = fixture
+        .open()
+        .expect("page authentication does not establish snapshot freshness");
+    rolled_back
+        .verify_integrity()
+        .expect("the older authenticated pages remain internally valid");
+    let checkpoint = rolled_back
+        .kt_checkpoint()
+        .expect("read rolled-back checkpoint")
+        .expect("present");
+    assert_eq!(
+        (checkpoint.tree_size, checkpoint.root_hash),
+        (old_size, old_hash),
+        "M2 does not detect replacement by an older valid encrypted snapshot"
+    );
+    rolled_back.close().expect("close");
 }
 
 #[test]

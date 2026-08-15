@@ -11,9 +11,9 @@ citadel-proto = { workspace = true }
 # Group crypto: OpenMLS (RFC 9420), single ciphersuite v1 (PLAN §4). citadel-core
 # is a CLIENT crate and legitimately owns crypto (INV-2); the rule-6 confinement
 # check covers only the service crates. No hand-rolled crypto (INV-10).
-openmls = "0.8"
+openmls = "=0.8.1"
 openmls_rust_crypto = "0.5"
-openmls_traits = "0.5"
+openmls_traits = "=0.5.0"
 # ADR-0007 §1 as amended by Amendment 1 §A: the local encrypted client store.
 #
 # SQLCipher whole-database encryption via the STOCK bundled amalgamation that

@@ -1,0 +1,1 @@
+{"ciphersuite":"MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519","confirmed_transcript_hash":{"vec":[]},"epoch":0,"extensions":{"unique":[]},"group_id":{"value":{"vec":[85,85,85,85,85,85,85,85,85,85,85,85,85,85,85,85]}},"protocol_version":"Mls10","tree_hash":{"vec":[245,50,218,254,14,178,154,112,31,70,254,158,97,139,114,192,38,116,79,185,97,214,120,197,86,2,186,37,76,239,165,170]}}
