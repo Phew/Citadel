@@ -9,8 +9,8 @@
   tracked in `docs/issues/011-adr-0007-non-blocking-notes.md`. Both landed with the store
   build and are folded into Amendment 1 §A.5 and §A.7; the issue is CLOSED.
 - **Date:** 2026-07-24 (body); 2026-07-26 (Amendment 1)
-- **Amendment 2:** **PROPOSED** (2026-07-27). It has no force
-  unless charge accepts it after K3's blocking review.
+- **Amendment 2:** **ACCEPTED** (charge, 2026-08-14). It takes effect when
+  PR #69 merges; until then, the accepted text on `main` remains controlling.
 - **Deciders:** charge (required for ACCEPTED); independent design review: K3
   **complete — CHANGES**, `docs/issues/009-adr-0007-store-design-review.md`
   (merged `9ca9317`). Its two blocking findings are folded as Amendment 1 below.
@@ -1171,13 +1171,14 @@ substance of what was accepted, stated plainly so a later reader is not misled:
 This is a user-facing property claim, so it is also stated in the README's security
 posture, not only here.
 
-## Amendment 2 (PROPOSED): corrections from the store build
+## Amendment 2 (ACCEPTED, charge, 2026-08-14): corrections from the store build
 
 This amendment records what the build disproved in the accepted text. It does
-not accept itself, change an acceptance criterion, or waive missing evidence.
+not change an acceptance criterion or waive missing evidence.
 `docs/issues/012-adr-0007-build-findings.md` preserves the source-level
-investigation. If charge does not accept this amendment, the accepted body
-remains controlling and the implementation divergences remain open.
+investigation. Charge accepted this amendment after K3 completed its blocking
+review. It takes effect when PR #69 merges; the accepted body on `main` remains
+controlling until then.
 
 ### A. Persisted past-epoch configuration is checked through its stored representation
 
@@ -1320,11 +1321,12 @@ operation-ledger guarantee excludes `new_key_package`, orphan cleanup remains
 disabled, and no claim is made that the current behavior is production pool
 management.
 
-The current `new_key_package` source comment explains the M2 choice by claiming
+The former `new_key_package` source comment explained the M2 choice by claiming
 that replay must generate fresh material. That production premise is
 superseded by the lifecycle above: generation replay is safe only when
-publication and fetch are also idempotent. This proposed, doc-only amendment
-does not alter source before charge accepts the correction.
+publication and fetch are also idempotent. The amendment was proposed as a
+doc-only change and deliberately did not alter source before charge accepted
+the correction.
 
 #### B.2 Pending-transmission acknowledgment
 

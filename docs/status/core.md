@@ -18,7 +18,7 @@ roster table is the only place one belongs.
 
 ADR-0007 (local encrypted client store) was designed, independently reviewed by K3, amended
 once, and ACCEPTED by charge on 2026-07-26 (`d302e76`). The store was then built against the
-accepted design, with the build-time divergences now proposed as Amendment 2, and is **PR #69**
+accepted design, with the build-time divergences recorded in Amendment 2, and is **PR #69**
 on branch `core/local-encrypted-store`. It is out of draft. K3's blocking review in PR #74
 returned **CHANGES** with three required items; the complete shutdown queue is at the end of
 this file. Four defects found in the ADR during the build are filed as
@@ -26,8 +26,28 @@ this file. Four defects found in the ADR during the build are filed as
 FS test belongs to K3. The accepted differential PCS oracle is also still unbuilt; issue 014
 corrects the prior milestone count. **M2 is three of five, not four of five.**
 
-charge subsequently assigned Amendment 2 explicitly. The proposed text is now in ADR-0007;
-it has no force until charge accepts it after K3's blocking review.
+charge accepted Amendment 2 on 2026-08-14 after K3 completed its blocking review. The
+acceptance is committed on PR #69 but has no force on `main` unless and until that PR merges.
+
+## 2026-08-14 resume update
+
+- Charge accepted ADR-0007 Amendment 2. This branch records the acceptance; it is not live on
+  `main` before PR #69 merges.
+- R1 covers both superseded comments. The `receive` comment now states the complete-wire
+  fingerprint and single actor-side parse rationale from §D. The `new_key_package` comment now
+  states the §B.1 lifecycle gate across generation, publication, and fetch.
+- R2 remains unresolved: Core must implement
+  `store_whole_file_rollback_boundary_is_explicit`, or charge must approve a deferral behind a
+  named forcing gate. PR #69 remains blocked and must not merge or be described as ready.
+- M2 remains **three of five**. `pcs_recover_after_update` has only success assertions: no
+  pre-update snapshot, attacker state, or required decryption failure. Persisted-state FS and
+  the captured-state differential PCS criterion remain open.
+- Core accepts ownership of the missing `LocalStore`-backed drivable client. Both remaining M2
+  criteria depend on it; K3 owns harness wiring after that client exists.
+- Native release conformance remains **zero of three platforms**.
+  `store_release_uses_only_the_target_native_credential_backend` is named only in documentation
+  and does not exist as a test function. Linux debug CI proves live Secret Service execution,
+  not the ADR's three-platform release-CI contract.
 
 ---
 

@@ -568,12 +568,10 @@ impl LocalStore {
     /// Generate one KeyPackage for the one-time pool, persisting its private
     /// init and encryption keys into the store.
     ///
-    /// Deliberately **not** a ledgered operation. Every other state-changing
-    /// call is idempotent under its operation ID; this one must not be. A
-    /// KeyPackage is one-time-use, so a retry has to produce a *new* package —
-    /// returning the previous one would hand two joiners the same init key.
-    /// It still runs in one immediate transaction, so a failure leaves no
-    /// half-written private key behind.
+    /// Deliberately **not** a ledgered operation in M2. Each call persists a
+    /// fresh package in one immediate transaction. Automatic replenishment and
+    /// cleanup remain disabled until generation, publication, and fetch share
+    /// the durable idempotent lifecycle in ADR-0007 Amendment 2.
     pub fn new_key_package(&self, identity: Arc<DeviceIdentity>) -> Result<KeyPackage, StoreError> {
         self.call(move |actor| {
             let transaction = actor
@@ -654,9 +652,9 @@ impl LocalStore {
                 group_id: *group_id.as_uuid().as_bytes(),
                 message_bytes: &message_bytes,
             };
-            // The kind is fingerprinted as ReceiveApplication for both cases: the
-            // caller cannot know which it is before decrypting, so using two
-            // kinds would make a retry look like an OperationIdConflict.
+            // ReceiveApplication is the legacy label for one incoming MLS
+            // wire-message domain: group id plus complete wire bytes. Parsing once
+            // here avoids a caller-side parse that could disagree with the actor.
             let print = fingerprint(OperationKind::ReceiveApplication, &request)?;
             actor.mutate(
                 operation_id,
