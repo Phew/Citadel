@@ -5,9 +5,12 @@
   its two blocking findings were folded as Amendment 1, and K3's re-review returned
   **APPROVE** (`docs/issues/009` rev 2, merged `289c570`). Recorded by the advisor on
   charge's instruction. Build may start.
-  Two non-blocking notes from the re-review are **not** folded here and are tracked in
-  `docs/issues/011-adr-0007-non-blocking-notes.md`; they land with the store build.
+  Two non-blocking notes from the re-review were **not** folded at acceptance and were
+  tracked in `docs/issues/011-adr-0007-non-blocking-notes.md`. Both landed with the store
+  build and are folded into Amendment 1 §A.5 and §A.7; the issue is CLOSED.
 - **Date:** 2026-07-24 (body); 2026-07-26 (Amendment 1)
+- **Amendment 2:** **ACCEPTED** (charge, 2026-08-14). It takes effect when
+  PR #69 merges; until then, the accepted text on `main` remains controlling.
 - **Deciders:** charge (required for ACCEPTED); independent design review: K3
   **complete — CHANGES**, `docs/issues/009-adr-0007-store-design-review.md`
   (merged `9ca9317`). Its two blocking findings are folded as Amendment 1 below.
@@ -934,6 +937,7 @@ rather than left to drift. Verified against `build.rs` in the pinned crate:
 | `SQLITE_TEMP_STORE=3` | `=2` (`:144`) | **Accepted at 2.** `2` already defaults temp storage to memory, and §3's per-connection `temp_store = MEMORY` pin with readback delivers the guarantee on the actor's only connection. No security property is lost. |
 | `SQLITE_EXTRA_INIT` / `SQLITE_EXTRA_SHUTDOWN` | absent | **Pin dropped.** These are mandatory only from SQLCipher 4.7.0; 4.5.7 initializes correctly without them, which is the configuration the stock crate ships and exercises. |
 | remove FTS5 | `-DSQLITE_ENABLE_FTS5` set (`:129`) | **Cannot be honored.** Accepted per A.4. |
+| remove FTS3 | `-DSQLITE_ENABLE_FTS3` (`:127`) and `-DSQLITE_ENABLE_FTS3_PARENTHESIS` (`:128`) set | **Cannot be honored.** Same class as FTS5, accepted on the same reasoning: the schema creates no FTS table of any kind and the application issues no attacker-influenced SQL. Recorded because this table is the standing reference for what the staged bundle compiles, and a reader checking a future FTS3 advisory against an incomplete table would get the wrong answer. (docs/issues/011 N2, closed by the store build.) |
 | `SQLITE_OMIT_LOAD_EXTENSION` | `-DSQLITE_ENABLE_LOAD_EXTENSION=1` set (`:131`) | **Cannot be honored.** Mitigated at runtime, below. |
 
 **Extension loading, since the compile-time pin is gone.** The capability is
@@ -945,6 +949,26 @@ things instead: it **never** calls `rusqlite`'s `load_extension_enable` or the
 underlying C API on any connection; §3's existing `trusted_schema = OFF` pin
 blocks a schema-embedded invocation; and the open sequence asserts the flag is
 off. A build in which extension loading can be enabled fails closed.
+
+**The mechanism of that assertion, named (docs/issues/011 N1, closed by the
+store build).** The sentence above originally said "the open sequence asserts
+the flag is off" without saying how, and an unnamed assertion is not evidence.
+The mechanism is a **behavioral probe**, not an inspection:
+`citadel_core::store::open::probe_extension_loading_is_refused` runs
+`SELECT load_extension(<a name that does not exist>)` on the live connection at
+the end of every open and requires the call to fail with exactly
+`not authorized`. That string is not incidental — it is what `loadExt` returns
+when `SQLITE_LoadExtFunc` is clear (`sqlcipher/sqlite3.c:135068-135074`) — and
+requiring it is what separates "refused" from "reached the loader and could not
+find the file", which is what a *set* flag would produce. The probe is wired
+into `store_release_uses_only_pinned_sqlcipher`, and the open aborts if it does
+not hold.
+
+A supporting fact, which strengthens the position but deliberately does **not**
+replace the probe: `rusqlite` 0.32.1 gates `load_extension_enable` behind a
+`load_extension` feature, and declares no default features at all, so the safe
+enabling API is not compiled on this graph. The probe's value is that it keeps
+holding if a future dependency change quietly enables that feature.
 
 **Standing rule for the staged flag set:** the pins above are what M2 asserts,
 and `store_release_uses_only_pinned_sqlcipher` reads them back from the built
@@ -981,8 +1005,12 @@ and an escalation under AGENTS.md rule 8 — not a skipped step.
 
 - `store_release_uses_only_pinned_sqlcipher` reads back `PRAGMA cipher_version`
   = **4.5.7** and `PRAGMA cipher_provider` = OpenSSL, asserts the A.5 flag table
-  including extension loading being disabled, and still proves a single
-  `rusqlite` / `libsqlite3-sys` graph with no system-library input.
+  — including the behavioral `load_extension()` probe named in A.5 and the FTS3
+  and FTS5 rows, which it asserts are **present** rather than absent, because
+  A.4's foreclosure rests on "compiled but unreachable" and a bundle that
+  actually removed them would need the record corrected rather than quietly
+  improved — and still proves a single `rusqlite` / `libsqlite3-sys` graph with
+  no system-library input.
 - `store_and_oracle_dependencies_pass_advisory_and_license_policy` covers
   SQLCipher **4.5.7** and embedded SQLite **3.45.3** in place of 4.17.0, against
   the lightweight manifest and SBOM of A.3.
@@ -1143,8 +1171,288 @@ substance of what was accepted, stated plainly so a later reader is not misled:
 This is a user-facing property claim, so it is also stated in the README's security
 posture, not only here.
 
+## Amendment 2 (ACCEPTED, charge, 2026-08-14): corrections from the store build
+
+This amendment records what the build disproved in the accepted text. It does
+not change an acceptance criterion or waive missing evidence.
+`docs/issues/012-adr-0007-build-findings.md` preserves the source-level
+investigation. Charge accepted this amendment after K3 completed its blocking
+review. It takes effect when PR #69 merges; the accepted body on `main` remains
+controlling until then.
+
+### A. Persisted past-epoch configuration is checked through its stored representation
+
+Section 6's fail-closed requirement stands, but its assumed OpenMLS API does
+not exist. In openmls 0.8.1, `MlsGroup::configuration()` returns
+`&MlsGroupJoinConfig`; that type's `max_past_epochs` field is private and it has
+no public getter. The similarly named public getter belongs to
+`MlsGroupCreateConfig`.
+
+The required check therefore serializes the loaded join configuration with the
+pinned codec and reads `max_past_epochs` from that representation. This is the
+representation persisted in the provider's `join_group_config` row. A loaded
+configuration with a non-zero value fails with
+`PastEpochRetentionRejected`; one whose field cannot be extracted fails with
+`PastEpochRetentionUnreadable`. Malformed persisted data that OpenMLS cannot
+load fails earlier through `GroupError::Mls`. No unreadable case defaults to
+zero.
+
+This replaces only the accessor premise. The explicit zero pin, the
+post-restart assertion, and the requirement to reject widened persisted state
+are unchanged.
+
+### B. Operation-ledger scope and two in-profile exceptions
+
+Section 5's statement that every state-changing public operation requires an
+`OperationId` was too broad. The ledger governs these nine mutation methods:
+`create_group`, `join_from_welcome`, `add_members`, `send`, `receive`,
+`prepare_self_update`, `confirm_self_update`, `abort_self_update`, and
+`accept_kt_head`. Profile lifecycle
+operations (`open`, `close`, and `destroy`) instead follow Sections 2 and 6:
+startup reconciliation is idempotent, close releases resources, and destroy
+returns a structured residual report. None is an operation-ledger unit.
+
+Within an open profile, the M2 build has two additional state-changing public
+methods that are explicit ledger exceptions.
+
+#### B.1 KeyPackage generation
+
+`LocalStore::new_key_package` changes provider state but is transactional and
+deliberately unledgered in the M2 implementation. Every successful invocation
+generates a fresh KeyPackage and commits its private material before returning.
+If the process stops after that commit but before response delivery, the caller
+cannot recover the returned public package and the private material can remain
+in the encrypted store.
+
+This is a documented M2 exception only. No automatic KeyPackage replenisher or
+reaper may ship against this API. The production lifecycle must satisfy every
+requirement below before automatic replenishment or cleanup is enabled.
+
+1. Generation has a durable operation identity. One generation operation ID
+   maps to one RFC 9420 `KeyPackageRef`, the exact serialized public
+   KeyPackage, its init-key identity, and its private provider records. While
+   the result payload is retained, a retry of the same operation ID returns the
+   same package. After that payload expires, the same ID returns a typed expired
+   result and never generates fresh material. The compact operation ID,
+   fingerprint, package reference, and terminal state remain until profile
+   destruction. Only a new operation ID generates fresh material.
+2. The canonical package identifier is RFC 9420's `KeyPackageRef`, computed
+   from the exact TLS-encoded KeyPackage. `LocalStore` derives it from the
+   validated generated object and separately records the `cipher_suite` field.
+   It enforces uniqueness of the exact encoded HPKE `init_key` across every
+   KeyPackage created by this device, including live records and local
+   tombstones, without scoping that uniqueness to a cipher suite. The opaque
+   service derives the package reference from the exact submitted bytes under
+   Citadel's pinned v1 cipher suite through a canonical
+   `citadel-proto` encoding helper and the existing SHA-256 facade; it does not
+   hand-roll the reference input or claim to validate or deduplicate init keys.
+   A future multi-cipher-suite pool cannot preserve that opaque derivation and
+   requires a separately accepted protocol and crypto-confinement design.
+3. Before any publication request can leave the process, the client durably
+   records `publish_pending`, including the exact package bytes and a stable
+   publication request ID. A missing or lost publication response leaves the
+   package in `publish_pending`; it never makes the package unpublished or
+   eligible for cleanup.
+4. Publication is idempotent under the device and publication request ID.
+   Repeating a request returns the original per-package result and rejects
+   changed bytes. The service enforces package-reference uniqueness across live
+   rows and retained tombstones. An aggregate pool size is not reconciliation
+   evidence; the response or a linearizable reconciliation operation identifies
+   every package's status.
+5. Before a fetch can leave the requesting device, that device durably records
+   an authenticated request ID and every request field. It retries or reconciles
+   only under that ID until the exact response is durably recorded. The service
+   executes the request idempotently: the first execution atomically selects
+   and marks the exact per-device packages as handed out and stores the complete
+   response. A retry returns those same package bytes; changed request fields
+   conflict. Handed-out and indeterminate packages count against replenishment
+   limits. A lost response therefore cannot burn another package under a new
+   request ID or drive automatic replenishment into unbounded retained private
+   state.
+6. The service distinguishes `available` from `handed_out`. It atomically and
+   irreversibly records `handed_out` before public package bytes can be returned
+   to a fetcher. A lost fetch response does not return the package to
+   `available`. An active, expired, or indeterminate reservation or lease is
+   not deletion evidence. Once bytes might have crossed the service boundary,
+   the package is `handed_out` unless a separately accepted protocol makes
+   lease expiry enforceable at every consumption path.
+7. Server handout is not MLS consumption. MLS consumption occurs only when
+   this device successfully processes a Welcome using that package. The
+   lifecycle transition and removal of its private provider material occur in
+   the same local transaction as the successful join, with a durable terminal
+   tombstone.
+8. A reaper may delete private KeyPackage material only when one of these
+   positive predicates is durably established:
+
+   - publication was never attempted: the package is still `generated`, has no
+     publication outbox record, and the before-send rule makes it impossible
+     for public bytes to have left the process;
+   - an atomic service retirement operation serialized against publication and
+     fetch, prevented every future fetch, and returned a per-package result
+     proving the package was never handed out; that result is persisted locally
+     before deletion; or
+   - successful local MLS consumption has already made the private material
+     obsolete in the same transaction.
+
+   `publish_pending`, `published`, `available`, `leased`, `handed_out`, an
+   indeterminate network result, elapsed wall-clock time, and pool age are all
+   deletion blockers. Failure to contact or reconcile with the service
+   preserves the private material.
+9. A fetched or possibly fetched package that never reaches successful local
+   consumption remains retained. Bounded cleanup of that state requires a
+   separate accepted design with a cryptographically bound use deadline
+   enforced by every Welcome submission and join path. Lease expiry, local age,
+   or a server assertion alone is not such a deadline.
+10. Local tombstones retain the generation operation ID, publication request
+    ID, package reference, exact init key, and terminal fingerprint until local
+    profile destruction. Service tombstones retain the publication request ID,
+    fetch request ID, package reference, and terminal state. The service has no
+    init-key identity and does not infer local profile destruction. It may
+    remove its tombstones only through an authenticated service-side device
+    retirement protocol that first revokes future device requests, serializes
+    against publication and fetch, and returns a durable retirement
+    acknowledgment. Result payloads may expire after the complete KeyPackage
+    validity and retry horizon, but the compact tombstones do not expire before
+    those explicit local and service terminal events. A late retry must never
+    recreate, republish, reissue, or consume the package twice.
+
+Until this lifecycle is implemented and independently tested, the accepted
+operation-ledger guarantee excludes `new_key_package`, orphan cleanup remains
+disabled, and no claim is made that the current behavior is production pool
+management.
+
+The former `new_key_package` source comment explained the M2 choice by claiming
+that replay must generate fresh material. That production premise is
+superseded by the lifecycle above: generation replay is safe only when
+publication and fetch are also idempotent. The amendment was proposed as a
+doc-only change and deliberately did not alter source before charge accepted
+the correction.
+
+#### B.2 Pending-transmission acknowledgment
+
+`LocalStore::acknowledge_transmission` deletes a pending outbox row without a
+new `OperationId`. Its input is the exact 16-byte idempotency key of that
+transmission, and `DELETE ... WHERE idempotency_key = ?` is naturally
+idempotent: the first successful call removes at most one row and every retry
+has the same terminal outcome. It returns no replay payload and makes no MLS
+mutation.
+
+This is an explicit exception to Section 5's universal wording, not a read
+operation. If acknowledgment later acquires a result that must be replayed or
+side effects beyond the keyed delete, it must join the operation ledger before
+that expansion ships.
+
+### C. Windows path containment has a residual race
+
+Section 2 overstated a cross-platform guarantee. The
+`SQLITE_OPEN_NOFOLLOW` behavior cited in this repository is in
+`libsqlite3-sys` 0.30.1's `sqlcipher/sqlite3.c`, the amalgamation Citadel
+actually compiles. That flag is effective through the Unix VFS and inert
+through the Windows VFS.
+
+The profile lock is opened with reparse-point traversal disabled and is
+revalidated through its open handle. Its containment check is therefore tied
+to the locked object. The database, staging file, rollback journals, and other
+sidecars are validated by path before open. Lock-first ordering narrows the
+window, but a same-user attacker able to rename or replace those paths can race
+validation and open on Windows. M2 does not close that TOCTOU window.
+
+If accepted, this is an explicit residual limitation, not a claim that path
+validation is race-free. Closing it requires a handle-relative or
+identity-revalidated database-open design and separate review.
+
+### D. Incoming application messages and commits share one ledger domain
+
+The build finding that motivated a split was withdrawn. RFC 9420 places
+`content_type` in cleartext in `PrivateMessage`, and OpenMLS exposes it before
+decryption through `MlsMessageIn::try_into_protocol_message()` and
+`ProtocolMessage::content_type()`.
+
+The M2 implementation nevertheless keeps one incoming MLS wire-message
+operation domain. Its fingerprint covers the group identifier and the complete
+MLS wire bytes, so an identical retry has the same identity whether it later
+yields an application message or a commit. Parsing once inside the store
+transaction also avoids a caller-side parse followed by an actor-side parse
+that could disagree. The outcome remains tagged as received application or
+merged commit.
+
+This replaces Section 5's two incoming atomic-unit labels with one semantic
+unit: process one incoming MLS wire message. The current
+`ReceiveApplication`/`receive_application` discriminator is a legacy label for
+that shared domain, not a claim that every input is application content. Its
+source comment must use the wire-message rationale above rather than the
+withdrawn "caller cannot know" premise.
+
+### E. SQLCipher pragma order and result type are normative
+
+`PRAGMA cipher_memory_security = ON` must run before `PRAGMA key`, because
+keying allocates the codec state whose allocator policy the readback reports.
+The readback is SQL text, not an integer column. The hardened open sequence
+must read the text, parse it strictly, and require `1`; changing either the
+order or the result type makes a correctly configured store fail its startup
+check.
+
+### F. Lock content is not an invariant
+
+Section 2's statement that lock content is empty applies only to a lock file
+Citadel created. Existing lock files are opened read-write without truncation,
+so existing content is preserved. Citadel neither reads nor trusts that
+content. Mutual exclusion and containment come from the file lock and
+handle-based validation only.
+
+### G. Live native credential backend evidence covers Linux; full release conformance covers zero platforms
+
+Section 2 requires release-CI evidence on Windows, macOS, and Linux. Every
+repository CI job still runs on `ubuntu-latest`; there are no Windows or macOS
+jobs. In
+[run 30325276041](https://github.com/Phew/Citadel/actions/runs/30325276041),
+the first Linux native credential backend job ran four credential tests: the
+two tests that do not write to Secret Service passed, while both live write
+tests failed with `Locked("Secret Service: no result found")`.
+The result is consistent with the fresh runner having no default collection
+for `gnome-keyring-daemon --unlock` to unlock. The job did not inspect the
+daemon's collection state directly, so the exact provisioning cause remains
+unproven by that failed run alone.
+
+K3's `b772c0f` repair supplied a non-empty throwaway keyring password and added
+a fail-fast `ReadAlias("default")` gate. In
+[run 30329679255](https://github.com/Phew/Citadel/actions/runs/30329679255),
+the gate resolved
+`/org/freedesktop/secrets/collection/login`, then all four credential tests
+passed, including both live Secret Service tests, and the complete workflow
+finished successfully. That is new live Linux native credential backend
+evidence.
+
+A local Windows terminal run was reported passing the native Credential
+Manager round-trip tests, but its output was not committed or published and it
+is not the required release matrix. Run 30329679255 also used the default test
+profile; it did not prove the production release graph excludes the credential
+double and unsupported backends, or that all returned secret owners are
+zeroizing types. Therefore live native credential backend execution covers
+Linux, but the
+full `store_release_uses_only_the_target_native_credential_backend` contract
+still covers **zero of three platforms**. This amendment does not weaken the
+three-platform requirement, treat a local run as CI, or mark the criterion
+complete. The production release-conformance jobs remain open on all three
+targets.
+
+### H. The v1 corpus lands now; test v2 codec migration has a release-forcing gate
+
+The committed `citadel-openmls-json-v1` corpus and its manifest enumerate the
+storage entities written by the evidence operation matrix and pin their exact
+bytes. `store_codec_v1_roundtrips_golden_corpus_and_migrates` checks that
+manifest against the independently observed provider rows, rejects missing or
+unlisted blobs, decodes every committed value, and byte-compares the current v1
+encoding with the committed representation.
+
+With charge's sign-off on 2026-08-14, the single-transaction test v2 codec
+migration is deferred. It remains required **before any release that ships a
+codec version bump**. The committed v1 corpus is compatibility evidence, not a
+substitute for that migration test.
+
 ## Primary sources
 
+- [RFC 9420: The Messaging Layer Security Protocol](https://www.rfc-editor.org/rfc/rfc9420.html)
 - [OpenMLS SQLite storage provider 0.2.0 API](https://docs.rs/openmls_sqlite_storage/0.2.0/openmls_sqlite_storage/struct.SqliteStorageProvider.html)
 - [rusqlite 0.32.1 transaction API](https://docs.rs/rusqlite/0.32.1/rusqlite/struct.Transaction.html)
 - [serde_json 1.0.150 API](https://docs.rs/serde_json/1.0.150/serde_json/)

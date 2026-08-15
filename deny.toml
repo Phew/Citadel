@@ -64,8 +64,28 @@ highlight = "all"
 # the native-TLS/openssl stack must never enter the graph. The service
 # crypto-confinement blocklist does NOT live here — see
 # ci/check_crypto_confinement.py.
+#
+# The `openssl-sys` ban is NARROWED, not lifted, and the narrowing is a
+# DECISION rather than a lint fix. ADR-0007 Amendment 1 §B.3 accepted, in
+# writing and knowingly, that SQLCipher's page codec links a vendored OpenSSL
+# inside citadel-core — the one process holding plaintext, MLS secrets, and
+# signing seeds. The TLS half of this ban's stated intent is untouched: no TLS
+# stack enters the graph, `native-tls` stays banned unconditionally, and OpenSSL
+# is reachable only through SQLCipher's page codec, on local files this process
+# already owns, parsing no network input.
+#
+# If you are reading this because `cargo tree` showed you OpenSSL and you are
+# trying to tell a decision from a drift: it is a decision, recorded at
+# docs/decisions/0007-local-encrypted-client-store.md, Amendment 1 §B.3. §B.4
+# lists what would REOPEN it — a second entry in `wrappers`, `openssl-sys`
+# arriving by any path other than SQLCipher's page codec, `native-tls` entering
+# at all, or a SERVICE crate (as opposed to citadel-core) acquiring an OpenSSL
+# dependency, which would also be an AGENTS.md rule 6 crypto-confinement
+# question.
 deny = [
-    { name = "openssl-sys" },
+    { name = "openssl-sys", wrappers = [
+        "libsqlite3-sys",
+    ], reason = "SQLCipher's page codec links vendored OpenSSL through libsqlite3-sys; it is not a TLS stack. Accepted consequence, ADR-0007 Amendment 1 §B.3" },
     { name = "native-tls" },
 ]
 

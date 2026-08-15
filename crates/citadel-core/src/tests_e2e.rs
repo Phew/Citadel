@@ -6,7 +6,7 @@
 //! test-harness and drive these same code paths through the delivery service.
 
 use crate::credential::CredentialError;
-use crate::crypto::{Provider, CIPHERSUITE};
+use crate::crypto::{EphemeralProvider as Provider, CIPHERSUITE};
 use crate::group::{DmGroup, GroupError, ReceiveOutcome};
 use crate::testing::{make_identity, AllowList};
 use citadel_proto::ids::GroupId;

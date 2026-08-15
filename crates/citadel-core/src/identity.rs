@@ -7,7 +7,6 @@
 //! and verify it against the KT log (INV-4, see [`crate::credential`]).
 
 use crate::credential::{verify_device_credential_signature, CredentialError};
-use crate::crypto::Provider;
 use citadel_proto::credential::DeviceCredential;
 use ed25519_dalek::{Signer as DalekSigner, SigningKey};
 use openmls::prelude::*;
@@ -93,7 +92,10 @@ impl DeviceIdentity {
     /// Generate one KeyPackage bound to this identity for the one-time pool
     /// (F1 step 4 / F2 target fetch). The private init/encryption keys are stored
     /// in the provider; only the public `KeyPackage` is published.
-    pub fn new_key_package(&self, provider: &Provider) -> Result<KeyPackage, IdentityError> {
+    pub fn new_key_package<P: openmls_traits::OpenMlsProvider>(
+        &self,
+        provider: &P,
+    ) -> Result<KeyPackage, IdentityError> {
         let bundle = KeyPackage::builder().build(
             crate::crypto::CIPHERSUITE,
             provider,

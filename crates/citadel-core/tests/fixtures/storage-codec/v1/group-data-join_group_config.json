@@ -1,0 +1,1 @@
+{"max_past_epochs":0,"number_of_resumption_psks":0,"padding_size":0,"sender_ratchet_configuration":{"maximum_forward_distance":1000,"out_of_order_tolerance":5},"use_ratchet_tree_extension":true,"wire_format_policy":{"incoming":"AlwaysCiphertext","outgoing":"AlwaysCiphertext"}}

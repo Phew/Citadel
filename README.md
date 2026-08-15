@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # Citadel
 
@@ -74,7 +74,7 @@ flowchart LR
 | Group crypto | [OpenMLS](https://github.com/openmls/openmls) (RFC 9420), `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` |
 | Backend | Rust · axum · tokio · sqlx · PostgreSQL 16 |
 | Desktop | Tauri 2 · React · TypeScript · Tailwind |
-| Local encrypted client store | SQLite + SQLCipher, database encryption key in the OS credential store ([ADR-0007](docs/decisions/0007-local-encrypted-client-store.md), accepted; build in progress) |
+| Local encrypted client store | SQLite + SQLCipher 4.5.7, database encryption key in the OS credential store ([ADR-0007](docs/decisions/0007-local-encrypted-client-store.md), accepted and built) |
 | Key transparency | `kt-log`: RFC 6962 Merkle log, signed tree heads, embedded trust anchor |
 | Attachments | S3-compatible (MinIO in dev), client-side encrypted |
 
@@ -139,13 +139,13 @@ plans/                    architecture plan + team process
 
 The two unproven criteria are forward secrecy on persisted state and post-compromise security, both measured against the boundary in [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) §6. Neither has a passing test.
 
-Forward secrecy against a captured device is deliberately unwritten: `citadel-core` holds MLS state in memory, so there is nothing persisted to capture and wipe, and a test written today would pass while proving nothing.
+The local encrypted store is built in PR #69, but the live harness still drives an `EphemeralProvider`. The missing `LocalStore`-backed client and harness wiring therefore block an honest persisted-state forward-secrecy test. The Core-only `post_restart_snapshot_proves_mls_forward_secrecy` test is component evidence, not the required harness criterion.
 
 Post-compromise security has a test, `pcs_recover_after_update`, and it does not meet the accepted bar. Every assertion in it is a success assertion: it provisions three clients, self-updates, merges, asserts convergence, and round-trips a message. It holds no pre-update snapshot and asks no compromised state to decrypt anything, so it cannot distinguish a system with post-compromise security from one without. ADR-0007 §6 requires a differential test, proved against an attacker holding the database, every SQLite sidecar file, and the correct database encryption key.
 
 This README claimed four of five between 2026-07-26 and 2026-08-14. Accepting ADR-0007 narrowed the criterion, and the already-green criteria were not re-audited against the narrower wording. Narrowing an acceptance criterion requires re-auditing everything already counted as satisfying it, which is now check 6 of [`plans/SHUTDOWN.md`](plans/SHUTDOWN.md).
 
-ADR-0007 is **accepted** (2026-07-26, after an independent design review that returned changes and a re-review that approved the amended version) and specifies the last unbuilt component: the local encrypted client store, plus the exact persisted-state boundary those two tests are written against. M2 closes when that store is built and both tests pass.
+ADR-0007 is **accepted** (2026-07-26, after an independent design review that returned changes and a re-review that approved the amended version). Charge accepted Amendment 2 on 2026-08-14; that acceptance is recorded in PR #69 and is not live on `main` before the PR merges. M2 closes only after the durable client exists and both remaining criteria pass.
 
 Deliberately out of scope for v1: federation, mobile, account recovery, sealed sender. Each returns via ADR when its time comes ([`plans/PLAN.md` §12](plans/PLAN.md)).
 

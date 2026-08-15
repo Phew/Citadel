@@ -20,10 +20,17 @@
 //!   target's account; the initiator rejects it before any commit, Welcome,
 //!   or server-side group state exists (INV-4).
 //!
-//! `device_compromise_past_messages_unreadable_fs` is deliberately ABSENT:
-//! MLS state is currently in-memory, so there is no persisted state to
-//! capture and wipe, and an in-memory "FS test" would pass while proving
-//! nothing. It lands with Sol's encrypted local store.
+//! `device_compromise_past_messages_unreadable_fs` is deliberately ABSENT.
+//! It was absent because MLS state was in-memory, so there was nothing to
+//! capture and wipe and an "FS test" would have passed while proving
+//! nothing. The local encrypted client store (ADR-0007) has since landed in
+//! `citadel_core::store`, so persisted state now exists and the test is
+//! writable — but it stays absent until it is written for real, against the
+//! live stack, because a vacuous green test is still worse than a missing
+//! one. The store-level proof
+//! (`citadel_core::store::tests::post_restart_snapshot_proves_mls_forward_secrecy`)
+//! is evidence the machinery works, not a substitute for this criterion.
+//! `docs/status/core.md` names the persisted-state API this test drives.
 //!
 //! Ignored by default so plain `cargo test --workspace` stays infra-free,
 //! but NEVER silently green: compose-smoke provisions the stack and runs
@@ -538,7 +545,7 @@ async fn adversarial_ds_swapped_keypackage_rejected() -> Result<()> {
         attacker_device.verifying_key().to_bytes(),
     )
     .expect("the attacker's self-consistent identity builds");
-    let attacker_provider = citadel_core::crypto::Provider::default();
+    let attacker_provider = citadel_core::crypto::EphemeralProvider::default();
     let attacker_package = attacker_identity_mls
         .new_key_package(&attacker_provider)
         .expect("the attacker's KeyPackage builds")
