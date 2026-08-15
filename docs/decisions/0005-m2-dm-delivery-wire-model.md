@@ -1,6 +1,6 @@
 # ADR-0005: M2 DM delivery + wire model (F2 Welcome, F4 send/receive)
 
-- **Status:** ACCEPTED (charge, 2026-07-21, as proposed; recorded by Opus). All five open decisions confirmed as proposed. K3's independent design review = approve, with two non-blocking gaps folded as **Amendment 1** below (charge, 2026-07-21; doc-only, the proto contracts are final and unchanged). Build (delivery-service transport, citadel-core MLS path) starts only on merge.
+- **Status:** ACCEPTED (charge, 2026-07-21, as proposed; recorded by Opus). All five open decisions confirmed as proposed. K3's independent design review = approve, with two non-blocking gaps folded as **Amendment 1** below (charge, 2026-07-21; doc-only, the proto contracts are final and unchanged). **Amendment 2** (accepted Subscribe is the Welcome delivery acknowledgment) ACCEPTED below (charge, 2026-08-14; doc-only, matches the merged implementation). Build (delivery-service transport, citadel-core MLS path) starts only on merge.
 - **Date:** 2026-07-20
 - **Deciders:** charge (required for ACCEPTED); author: Opus. Design review: K3.
 - **Invariants touched:** INV-1 (no plaintext server-side; canary extends to delivery tables), INV-2 (keys never leave the client; database encryption key in the OS credential store), INV-3 (server proposes, never decides), INV-4 (clients validate every welcome/commit/credential), INV-6 (deterministic commit ordering, *reserved* here and enforced in M3), INV-8 (franking, not scanning; scoping call below), INV-9 (database encryption key + idempotency randomness from the OS CSPRNG), INV-10 (no crypto primitives from scratch; padding + SQLite-at-rest scoping calls below)
@@ -425,3 +425,37 @@ the KT log), and INV-1 still makes any stray delivery of ciphertext to a
 non-member harmless. Evidence: `submit_rejects_non_participant` (added to
 Evidence above), alongside the existing `subscribe_rejects_non_addressee` for the
 read path.
+
+## Amendment 2 (ACCEPTED, charge, 2026-08-14): accepted Subscribe is the Welcome delivery acknowledgment
+
+Raised by docs/issues/013 finding 1 (post-merge delta review of `33fcfe9`).
+Accepted by charge on 2026-08-14; the controlling text is this amendment,
+and it matches the implementation as merged (`33fcfe9`).
+
+**The correction.** §1 step 4 says the gateway pushes a device's undelivered
+Welcomes and **then sets `delivered_at`**. The merged implementation does not
+mark at push time: it marks only when the device sends an **accepted,
+post-verification Subscribe** to the Welcome's group
+(`crates/delivery-service/src/gateway.rs` Subscribe handler;
+`store::mark_welcomes_delivered_for_groups`). The implementation is stronger
+than the text it replaced: a socket flush does not prove the joiner consumed
+the Welcome, and a client that crashes after flush but before reading must
+see the Welcome re-pushed on its next connect or the join is stranded.
+Delivery is therefore acknowledged by consumption (Subscribe after the client
+verified and joined), not by transport (frames emitted).
+
+**Trust posture, unchanged from §1.** The Subscribe is the client's
+post-verification claim; INV-4 remains the content-security authority (the
+client verified the Welcome/GroupInfo signature and every member credential
+against the KT log before subscribing), and over-marking only stops re-pushes
+of ciphertext the same device can fetch via `?after=` sync anyway — INV-1
+makes that harmless. A dishonest or buggy client can stop its own re-pushes
+and nobody else's.
+
+**Recorded here per docs/issues/013 finding 4** (the SQL bytes are immutable
+after application and are NOT edited): two comments in applied migration
+`0004_delivery_groups_messages.sql` are historical and superseded — the
+header's "each migrator runs with `ignore_missing`" (superseded by ADR-0006's
+canonical runner, which forbids `ignore_missing`), and the
+`welcome_deliveries` comment's "then delivered_at is set" at push time
+(superseded by this amendment).
