@@ -266,6 +266,97 @@ jobs:
         if: always()
         run: docker compose -f deploy/docker-compose.yml down -v
 
+  # ADR-0007 Evidence: store_release_uses_only_pinned_sqlcipher must run
+  # against the RELEASE artifact, not the debug one. cipher_version
+  # 4.5.7 community, cipher_provider, the absence of PRAGMA cipher_status,
+  # and the Amendment 1 §A.5 compile_options table are claims about the
+  # binary you would ship. Debug-profile green is a different claim.
+  #
+  # Stage 1 only (charge, 2026-08-14): ubuntu-latest, this one named test.
+  # Windows and macOS runners are later stages and are not added here.
+  # store_release_uses_only_the_target_native_credential_backend is not
+  # written in this job: that test does not exist, it is core's to write,
+  # and a green runner on a missing test is the defect this project keeps
+  # catching.
+  #
+  # The named test lives on PR #69 (origin/core/local-encrypted-store),
+  # not on main. This job does not vendor a copy. Until that function
+  # exists in crates/citadel-core, the job is inert and says so — it is
+  # not evidence. The first ref that contains the function runs it under
+  # --release and fails if cargo's filter matches nothing (PLAN.md §13:
+  # `cargo test <filter>` exits 0 on zero matches).
+  #
+  # Known hazard: the store links two C libraries and SQLCipher's page
+  # codec uses a vendored OpenSSL via openssl-src. Release profile
+  # changes build flags. A break here is a finding, not a flag to skip.
+  store-release-sqlcipher:
+    name: store · release-profile pinned SQLCipher
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      # Presence gate. Do not vendor the test; do not treat a missing test
+      # as a pass. Inert until PR #69 lands the function. The remaining
+      # steps are skipped on that path so an inert job is not a silent
+      # cargo-test of zero matches.
+      - name: Detect store_release_uses_only_pinned_sqlcipher
+        id: detect
+        run: |
+          set -euo pipefail
+          if grep -R --include='*.rs' -F 'fn store_release_uses_only_pinned_sqlcipher' crates/citadel-core >/dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "named test present; this job will run it under --release"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=inert until PR #69::store_release_uses_only_pinned_sqlcipher is not in crates/citadel-core on this ref. This job is not release-profile evidence. It will start running the named test under --release when PR #69 merges."
+            echo "INERT: named test absent from crates/citadel-core on this ref."
+            echo "The test lives on PR #69 (origin/core/local-encrypted-store)."
+            echo "This job is not ADR-0007 release-profile evidence until that function exists."
+          fi
+
+      # Same two-library surface as PR #69's rust job. SQLCipher's page
+      # codec uses a vendored OpenSSL that openssl-src builds from source
+      # (perl, make and cc come with the runner image). The Secret Service
+      # backend is not exercised here — this test uses the credential
+      # double — but citadel-core still links libdbus on Linux, so
+      # libdbus-1-dev has to be present or the release build fails with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, libdbus)
+        if: steps.detect.outputs.present == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
+      - name: Cache cargo
+        if: steps.detect.outputs.present == 'true'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Run store_release_uses_only_pinned_sqlcipher (--release)
+        if: steps.detect.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+
+          # cargo test <filter> exits 0 when zero tests match. That is a
+          # silent pass, which PLAN.md §13 and AGENTS.md rule 4 forbid.
+          # Require the exact one-test summary after a real --release run.
+          log="$(mktemp)"
+          set +e
+          cargo test --release --locked -p citadel-core --lib -- --nocapture store_release_uses_only_pinned_sqlcipher 2>&1 | tee "$log"
+          status="${PIPESTATUS[0]}"
+          set -e
+          if ! grep -F 'test result: ok. 1 passed; 0 failed;' "$log" >/dev/null; then
+            echo "expected exactly one passing store_release_uses_only_pinned_sqlcipher under --release"
+            echo "a filter that matches nothing is a failure, not a skip (PLAN.md §13)"
+            exit 1
+          fi
+          exit "$status"
+
   # Path gate only — skips the heavy Node/Tauri job on Rust-only pushes.
   # pull-requests: read is required for dorny/paths-filter on pull_request
   # (lists changed files via the API; contents:read alone → "Resource not accessible").
