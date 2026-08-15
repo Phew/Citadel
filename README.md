@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 # Citadel
 
@@ -135,9 +135,17 @@ plans/                    architecture plan + team process
 
 **M1 closed 2026-07-20.** Its exit acceptance test runs in CI on every push: 3 accounts × 2 devices registered and enrolled through the live stack, key packages published and consumed exactly-once, and each client verifying its own KT inclusion proof against the signed tree head. Identity, challenge-response auth, hashed bearer tokens with cascade revocation, device enrollment, and the transparency log are all on main with their evidence tests.
 
-**M2 remains open, with one component left.** On main: the client MLS engine, the delivery message path, the WebSocket gateway, the mock-backed desktop shell, and the live exit harness. Four of M2's five exit criteria run as standing CI gates on every push, and the canary scan now drives real DM plaintext through the full send/receive path, so the no-plaintext invariant is checked against actual message content rather than synthetic markers.
+**M2 remains open, with two exit criteria unproven.** On main: the client MLS engine, the delivery message path, the WebSocket gateway, the mock-backed desktop shell, and the live exit harness. **Three of M2's five exit criteria** run as standing CI gates on every push, and the canary scan now drives real DM plaintext through the full send/receive path, so the no-plaintext invariant is checked against actual message content rather than synthetic markers.
 
-The fifth criterion, forward secrecy against a captured device, is deliberately unwritten: `citadel-core` currently holds MLS state in memory, so there is nothing persisted to capture and wipe, and a test written today would pass while proving nothing. [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) is **accepted** (2026-07-26, after an independent design review that returned changes and a re-review that approved the amended version) and specifies the last unbuilt component: the local encrypted client store, plus the exact persisted-state boundary the forward-secrecy and post-compromise tests are written against. M2 closes when that store is built and those two tests pass.
+The two unproven criteria are forward secrecy on persisted state and post-compromise security, both measured against the boundary in [ADR-0007](docs/decisions/0007-local-encrypted-client-store.md) §6. Neither has a passing test.
+
+Forward secrecy against a captured device is deliberately unwritten: `citadel-core` holds MLS state in memory, so there is nothing persisted to capture and wipe, and a test written today would pass while proving nothing.
+
+Post-compromise security has a test, `pcs_recover_after_update`, and it does not meet the accepted bar. Every assertion in it is a success assertion: it provisions three clients, self-updates, merges, asserts convergence, and round-trips a message. It holds no pre-update snapshot and asks no compromised state to decrypt anything, so it cannot distinguish a system with post-compromise security from one without. ADR-0007 §6 requires a differential test, proved against an attacker holding the database, every SQLite sidecar file, and the correct database encryption key.
+
+This README claimed four of five between 2026-07-26 and 2026-08-14. Accepting ADR-0007 narrowed the criterion, and the already-green criteria were not re-audited against the narrower wording. Narrowing an acceptance criterion requires re-auditing everything already counted as satisfying it, which is now check 6 of [`plans/SHUTDOWN.md`](plans/SHUTDOWN.md).
+
+ADR-0007 is **accepted** (2026-07-26, after an independent design review that returned changes and a re-review that approved the amended version) and specifies the last unbuilt component: the local encrypted client store, plus the exact persisted-state boundary those two tests are written against. M2 closes when that store is built and both tests pass.
 
 Deliberately out of scope for v1: federation, mobile, account recovery, sealed sender. Each returns via ADR when its time comes ([`plans/PLAN.md` §12](plans/PLAN.md)).
 
