@@ -37,7 +37,7 @@ You are assigned the code where correctness is a security property, not just a q
 
 ### M3
 1. The transactional commit gate in delivery-service: UNIQUE-per-epoch enforcement, 409 + canonical-commit response.
-2. Client-side rebase-on-conflict in `citadel-core` (F7). This is the hardest concurrency work in the project; take it slowly, property-test it, then let Grok's churn rig hammer it.
+2. Client-side rebase-on-conflict in `citadel-core` (F7). This is the hardest concurrency work in the project; take it slowly, property-test it, then let K3's churn rig hammer it. (The churn rig moved from Grok to K3 on 2026-07-25, logged in `plans/AGENTS.md` "Sequencing"; long-horizon debugging against runtime feedback is the axis K3 leads.)
 3. Committer election logic.
 
 ### M4
