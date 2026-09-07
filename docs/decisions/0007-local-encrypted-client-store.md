@@ -1402,9 +1402,12 @@ handle-based validation only.
 
 ### G. Live native credential backend evidence covers Linux; full release conformance covers zero platforms
 
-Section 2 requires release-CI evidence on Windows, macOS, and Linux. Every
-repository CI job still runs on `ubuntu-latest`; there are no Windows or macOS
-jobs. In
+Section 2 requires release-CI evidence on Windows, macOS, and Linux. When this
+amendment was accepted every repository CI job ran on `ubuntu-latest`; there
+were no Windows or macOS jobs. (Since 2026-09-06 `store-macos` and
+`store-windows` compile the crate and drive the native backend on each target
+in the debug profile; the release-profile half this section requires is still
+open and is PR #80's.) In
 [run 30325276041](https://github.com/Phew/Citadel/actions/runs/30325276041),
 the first Linux native credential backend job ran four credential tests: the
 two tests that do not write to Secret Service passed, while both live write

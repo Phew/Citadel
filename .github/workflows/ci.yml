@@ -196,6 +196,93 @@ jobs:
             cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
           '
 
+  # ADR-0007 §2's other two thirds. Until 2026-09-06 no job compiled
+  # store/credentials/apple.rs, store/credentials/windows.rs, or the Windows
+  # halves of paths.rs and lock.rs, and the first macOS execution found that
+  # every store test failed under the default $TMPDIR (see docs/issues/015,
+  # Resolution). These jobs compile and run the crate on each target, then run
+  # the #[ignore]d native-backend tests with --include-ignored after
+  # provisioning the backend, exactly as store-evidence does on Linux.
+  store-macos:
+    name: store · macOS Keychain backend
+    runs-on: macos-latest
+    timeout-minutes: 30
+    needs: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # clippy on THIS target is the point: the apple adapter's imports were
+      # "corrected by inspection" because nothing compiled them (apple.rs).
+      - name: cargo clippy (citadel-core, macOS)
+        run: cargo clippy -p citadel-core --all-targets --locked -- -D warnings
+
+      - name: cargo test (citadel-core, macOS, default $TMPDIR)
+        run: cargo test -p citadel-core --lib --locked
+
+      # The runner's login keychain may be locked or absent. A throwaway
+      # default keychain, unlocked with no auto-lock timeout, is what the
+      # adapter's legacy SecKeychain* calls land in. Provisioning gate: the
+      # default keychain must resolve to the one just created before the tests
+      # run, so a provisioning regression fails here with a clear message.
+      - name: Native credential-store conformance
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/citadel-ci.keychain-db"
+          security create-keychain -p citadel-ci "$kc"
+          security set-keychain-settings "$kc"
+          security unlock-keychain -p citadel-ci "$kc"
+          security default-keychain -s "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          resolved=$(security default-keychain | tr -d ' "')
+          if [ "$resolved" != "$kc" ]; then
+            echo "provisioning failed: default keychain is $resolved, expected $kc"
+            exit 1
+          fi
+          echo "default keychain resolves to $resolved"
+          cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
+
+  store-windows:
+    name: store · Windows Credential Manager backend
+    runs-on: windows-latest
+    timeout-minutes: 40
+    needs: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # openssl-src builds vendored OpenSSL with Perl; the runner image ships
+      # Strawberry Perl. If a future image drops it, this is the step that
+      # fails and the message names perl, which is the cause.
+      - name: Perl is present for openssl-src
+        run: perl --version
+
+      - name: cargo clippy (citadel-core, Windows)
+        run: cargo clippy -p citadel-core --all-targets --locked -- -D warnings
+
+      # Includes the Windows halves of paths.rs and lock.rs, and the adapter's
+      # own tests, none of which any job has ever compiled. The Credential
+      # Manager needs no provisioning: the runner user has a logon session.
+      - name: cargo test (citadel-core, Windows)
+        run: cargo test -p citadel-core --lib --locked
+
+      - name: Native credential-store conformance
+        run: cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
+
   compose-smoke:
     name: docker compose health
     runs-on: ubuntu-latest

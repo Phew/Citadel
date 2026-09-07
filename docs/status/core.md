@@ -198,16 +198,27 @@ substitute for either the page-reconstruction test or K3's harness AC.
 
 ## Which platforms have NO CI job — read this before trusting a green check
 
-**Every job in `.github/workflows/ci.yml` is `runs-on: ubuntu-latest`.** There is no Windows
-runner and no macOS runner anywhere in this repository.
+**Update 2026-09-06.** `store-macos` (`macos-latest`) and `store-windows` (`windows-latest`)
+now exist in `ci.yml`: each runs clippy `-D warnings` and the crate's lib tests on its target,
+then the `#[ignore]`d native-backend tests with `--include-ignored` (macOS provisions a
+throwaway unlocked default keychain first). `apple.rs` gained the same conformance tests
+`secret_service.rs` has, plus a foreign-size `Malformed` case, and passed them on a developer
+Mac before the job existed. The table below and the paragraph after it are the state **before**
+that date, kept because the trap they describe is what the new jobs exist to spring in CI
+rather than on a user. Debug-profile coverage is now three of three targets; release-profile
+conformance (`store_release_uses_only_the_target_native_credential_backend`) is still zero of
+three and belongs to PR #80.
+
+**Before 2026-09-06:** every job in `.github/workflows/ci.yml` was `runs-on: ubuntu-latest`.
+There was no Windows runner and no macOS runner anywhere in this repository.
 
 | Target | Compiled in CI? | Native backend exercised? |
 |---|---|---|
-| Linux | yes (`rust`, and `store-evidence` for the real Secret Service via `dbus-run-session` + gnome-keyring) | yes, Linux only |
-| Windows | **no** | **no** |
-| macOS | **no** | **no** |
+| Linux | yes (`rust`, and `store-evidence` for the real Secret Service via `dbus-run-session` + gnome-keyring) | yes |
+| Windows | **no** until 2026-09-06 (`store-windows`) | **no** until 2026-09-06 |
+| macOS | **no** until 2026-09-06 (`store-macos`) | **no** until 2026-09-06 |
 
-What that means concretely, and it is more than "some tests don't run":
+What that meant concretely, and it is more than "some tests don't run":
 
 - **`store/credentials/windows.rs` is compiled by no CI job.** It is the adapter that calls
   `CredReadW`/`CredWriteW`/`CredDeleteW` directly. Nothing in CI type-checks it.

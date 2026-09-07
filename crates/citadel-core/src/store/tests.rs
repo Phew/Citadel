@@ -4,10 +4,13 @@
 //!
 //! - `store_release_uses_only_the_target_native_credential_backend`, and the
 //!   three-desktop-target half of `store_release_uses_only_pinned_sqlcipher`,
-//!   need Windows, macOS, and Linux release runners. This repository's CI is
-//!   `ubuntu-latest` only. The single-target half of the SQLCipher test —
-//!   version, provider, the Amendment 1 §A.5 flag table, and the extension
-//!   probe — does run here, against the real linked artifact.
+//!   need Windows, macOS, and Linux **release-profile** runners, which are
+//!   PR #80's. The debug-profile crate does compile and run on all three
+//!   (`rust`, `store-macos`, `store-windows` in `ci.yml`), each job driving
+//!   its native credential backend with `--include-ignored`. The
+//!   single-target half of the SQLCipher test — version, provider, the
+//!   Amendment 1 §A.5 flag table, and the extension probe — runs on each,
+//!   against the real linked artifact.
 //! - `store_and_oracle_dependencies_pass_advisory_and_license_policy` is a
 //!   native-manifest, SBOM, and pinned-scanner job, not a Rust test.
 //! - `post_restart_update_proves_post_compromise_security` needs the `mls-rs` /
