@@ -88,11 +88,14 @@ services:
       PORT: "8081"
       RUST_LOG: ${RUST_LOG:-info}
       DATABASE_URL: postgres://${POSTGRES_USER:-citadel}:${POSTGRES_PASSWORD:-citadel}@postgres:5432/${POSTGRES_DB:-citadel}
-      # M1 dev-stack KT log signing seed (ADR-0001 §3; base64 of 32 bytes,
-      # here 0x00..0x1f). Fixed so the dev stack's tree heads are stable.
+      # KT log signing seed (ADR-0001 §3; base64 of 32 bytes). Deliberately
+      # NO default: a defaulted seed in a committed file was one `compose up`
+      # in the wrong place away from a fully forgeable transparency log. The
+      # dev stack takes its fixed seed from .env (see .env.example), and the
+      # harness assumes that same dev value when the variable is unset.
       # Production loads the seed from the service secret store, never from
-      # a committed file.
-      CITADEL_KT_LOG_SEED: ${CITADEL_KT_LOG_SEED:-AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=}
+      # a committed file. Compose refuses to start without it.
+      CITADEL_KT_LOG_SEED: ${CITADEL_KT_LOG_SEED:?CITADEL_KT_LOG_SEED is required (base64 of the 32-byte KT log signing seed); copy .env.example to .env for the dev stack}
     ports:
       - "8081:8081"
     depends_on:

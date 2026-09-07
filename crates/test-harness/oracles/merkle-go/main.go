@@ -3,9 +3,9 @@
 //
 //	go run . > ../../../kt-log/tests/fixtures/merkle_rfc6962.json
 //
-// The output is deterministic: same corpora in, byte-identical JSON out, so a
-// regenerate-and-diff CI step (owned by K3) can detect any drift between the
-// oracle and the committed fixtures.
+// The output is deterministic: same corpora in, byte-identical JSON out. The
+// merkle-oracle CI job regenerates it and cmp's it against the committed
+// fixture on every run.
 package main
 
 import (

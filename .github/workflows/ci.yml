@@ -121,11 +121,47 @@ jobs:
       - name: cargo deny
         run: cargo deny check
 
+  # PLAN.md §13's independent-oracle rule, closed: the committed RFC 6962
+  # fixture that kt-log's tests byte-compare against is REGENERATED from the
+  # Go oracle here and diffed on every run. Without this the cross-check was
+  # only as independent as the committed blob, which nothing re-derived. The
+  # oracle has no module dependencies (go.mod has no require) and the runner
+  # image ships Go, so there is nothing to install and nothing to pin.
+  merkle-oracle:
+    name: kt-log · Go oracle regenerate-and-diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Go toolchain on the image
+        run: go version
+
+      - name: Regenerate the fixture from the oracle
+        working-directory: crates/test-harness/oracles/merkle-go
+        run: go run . > "$RUNNER_TEMP/merkle_rfc6962.json"
+
+      # cmp, not a JSON-aware diff: the test embeds the file with include_str!
+      # and the oracle promises byte-stable output, so bytes are the contract.
+      - name: Committed fixture is byte-identical to the oracle's output
+        run: |
+          if ! cmp "$RUNNER_TEMP/merkle_rfc6962.json" crates/kt-log/tests/fixtures/merkle_rfc6962.json; then
+            echo "crates/kt-log/tests/fixtures/merkle_rfc6962.json drifted from the Go oracle."
+            echo "Regenerate it (see crates/test-harness/oracles/merkle-go/README.md) and commit."
+            exit 1
+          fi
+          echo "fixture matches the oracle byte for byte ($(wc -c < "$RUNNER_TEMP/merkle_rfc6962.json") bytes)"
+
   compose-smoke:
     name: docker compose health
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: rust
+    env:
+      # The dev-stack KT seed (public, .env.example). Compose has no default
+      # on purpose; the harness assumes this exact value when unset.
+      CITADEL_KT_LOG_SEED: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -233,6 +269,9 @@ jobs:
     needs: rust
     env:
       CITADEL_DATABASE_URL: postgres://citadel:citadel@127.0.0.1:5432/citadel
+      # The dev-stack KT seed (public, .env.example). Compose has no default
+      # on purpose; the harness assumes this exact value when unset.
+      CITADEL_KT_LOG_SEED: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
