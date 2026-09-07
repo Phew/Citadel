@@ -35,7 +35,13 @@ use crate::store::{self, StoreError, SubmitOutcome};
 pub const FANOUT_CAPACITY: usize = 1024;
 
 /// One fanned-out message: its group and the fully populated envelope.
-pub type FanoutEvent = (GroupId, Arc<Envelope>);
+/// `(group, envelope, welcome recipients)`. The recipient list is non-empty
+/// only for a Welcome: a connected device that is one of its addressees
+/// receives it live even though it cannot yet be subscribed to a group it
+/// does not know exists. Delivery is still acknowledged only by an accepted
+/// Subscribe (ADR-0005 Amendment 2), so a missed live push is re-sent on the
+/// next connect.
+pub type FanoutEvent = (GroupId, Arc<Envelope>, Arc<Vec<DeviceId>>);
 
 /// Shared service state.
 #[derive(Clone)]
@@ -122,6 +128,7 @@ async fn submit_message(
     Json(req): Json<SubmitMessageRequest>,
 ) -> Result<Json<SubmitMessageResponse>, ApiError> {
     let device = bearer_device(&state, &headers).await?;
+    let welcome_recipients = Arc::new(req.recipient_device_ids.clone());
     match store::submit_message(&state.pool, device, gid, req)
         .await
         .map_err(store_error)?
@@ -129,7 +136,9 @@ async fn submit_message(
         SubmitOutcome::Created(response, envelope) => {
             // AFTER commit only: SendError means zero live subscribers,
             // which is fine — GET sync is the catch-up path.
-            let _ = state.fanout.send((gid, Arc::new(envelope)));
+            let _ = state
+                .fanout
+                .send((gid, Arc::new(envelope), welcome_recipients));
             Ok(Json(response))
         }
         // No fanout: the original submit already did.

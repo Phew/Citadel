@@ -66,7 +66,8 @@ pub mod evidence;
 mod tests;
 
 pub use actor::{
-    ConversationRow, KtCheckpoint, LocalStore, MessageRow, OperationOutcome, PendingTransmission,
+    ConversationRow, KtCheckpoint, LocalStore, MessageRow, OperationOutcome, PeerRow,
+    PendingTransmission, ProfileRow,
 };
 pub use codec::{CitadelOpenMlsJsonCodecV1, CODEC_BOUND_VERSIONS, CODEC_ID};
 pub use codec_migration::{

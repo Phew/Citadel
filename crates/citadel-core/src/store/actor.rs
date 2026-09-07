@@ -34,7 +34,8 @@ use crate::group::{DmGroup, PreparedCommit, ReceiveOutcome};
 use crate::identity::DeviceIdentity;
 use crate::store::credentials::CredentialStore;
 use crate::store::key::DatabaseEncryptionKey;
-use citadel_proto::ids::GroupId as ProtoGroupId;
+use citadel_proto::credential::DeviceCredential;
+use citadel_proto::ids::{AccountId, DeviceId, GroupId as ProtoGroupId};
 use openmls::prelude::KeyPackage;
 use openmls_rust_crypto::RustCrypto;
 use openmls_traits::crypto::OpenMlsCrypto;
@@ -185,6 +186,34 @@ pub struct PendingTransmission {
     pub wire_bytes: Vec<u8>,
     /// For a commit, the epoch reached only after confirmation.
     pub proposed_epoch: Option<u64>,
+    /// Non-empty only for a Welcome: the devices the delivery service must
+    /// address it to.
+    pub recipient_device_ids: Vec<DeviceId>,
+}
+
+/// The account and device this profile registered as (schema v2). Public
+/// material only; the signing seeds live in the OS credential store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileRow {
+    pub account_id: AccountId,
+    pub device_id: DeviceId,
+    pub handle: String,
+    pub identity_pubkey: [u8; 32],
+    pub device_pubkey: [u8; 32],
+    pub credential: DeviceCredential,
+    pub kt_leaf_index: u64,
+    pub kt_appended_at: i64,
+}
+
+/// A peer this profile has KT-verified (schema v2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRow {
+    pub account_id: AccountId,
+    pub handle: String,
+    pub identity_pubkey: [u8; 32],
+    pub kt_leaf_index: u64,
+    pub kt_appended_at: i64,
+    pub attested_tree_size: u64,
 }
 
 /// The persisted anti-rollback checkpoint (ADR-0001).
@@ -505,6 +534,7 @@ impl LocalStore {
         identity: Arc<DeviceIdentity>,
         group_id: ProtoGroupId,
         key_packages: Vec<KeyPackage>,
+        recipient_device_ids: Vec<DeviceId>,
         verifier: Arc<V>,
     ) -> Result<OperationOutcome, StoreError>
     where
@@ -555,6 +585,7 @@ impl LocalStore {
                         "welcome",
                         &output.welcome_bytes,
                         None,
+                        Some(&recipient_device_ids),
                     )?;
                     Ok(OperationOutcome::MembersAdded {
                         commit_bytes: output.commit_bytes,
@@ -572,6 +603,23 @@ impl LocalStore {
     /// fresh package in one immediate transaction. Automatic replenishment and
     /// cleanup remain disabled until generation, publication, and fetch share
     /// the durable idempotent lifecycle in ADR-0007 Amendment 2.
+    /// The members a Welcome names, parsed and signature-checked but not yet
+    /// KT-attested (see `DmGroup::welcome_members`). Read-only: the staging
+    /// transaction is rolled back, so the KeyPackage stays consumable by the
+    /// real join.
+    pub fn welcome_members(
+        &self,
+        welcome_bytes: Vec<u8>,
+    ) -> Result<Vec<DeviceCredential>, StoreError> {
+        self.call(move |actor| {
+            let transaction = actor.connection.transaction()?;
+            let provider = StoreProvider::new(&transaction);
+            let members = DmGroup::welcome_members(&provider, &welcome_bytes)?;
+            transaction.rollback()?;
+            Ok(members)
+        })?
+    }
+
     pub fn new_key_package(&self, identity: Arc<DeviceIdentity>) -> Result<KeyPackage, StoreError> {
         self.call(move |actor| {
             let transaction = actor
@@ -703,16 +751,6 @@ impl LocalStore {
                         }
                         ReceiveOutcome::CommitMerged { epoch } => {
                             update_epoch(transaction, group_id, epoch)?;
-                            transaction.execute(
-                                "INSERT INTO citadel_delivery_cursors (group_id, last_sequence)
-                                 VALUES (?1, ?2)
-                                 ON CONFLICT(group_id) DO UPDATE
-                                   SET last_sequence = MAX(last_sequence, excluded.last_sequence)",
-                                rusqlite::params![
-                                    group_id.as_uuid().as_bytes().as_slice(),
-                                    epoch as i64
-                                ],
-                            )?;
                             Ok(OperationOutcome::CommitMerged { epoch })
                         }
                     }
@@ -938,7 +976,8 @@ impl LocalStore {
     pub fn pending_transmissions(&self) -> Result<Vec<PendingTransmission>, StoreError> {
         self.call(|actor| {
             let mut statement = actor.connection.prepare(
-                "SELECT idempotency_key, group_id, kind, wire_bytes, proposed_epoch
+                "SELECT idempotency_key, group_id, kind, wire_bytes, proposed_epoch,
+                        recipient_device_ids
                    FROM citadel_pending_transmissions ORDER BY created_at, rowid",
             )?;
             let rows = statement
@@ -949,11 +988,18 @@ impl LocalStore {
                         row.get::<_, String>(2)?,
                         row.get::<_, Vec<u8>>(3)?,
                         row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             rows.into_iter()
-                .map(|(key, group, kind, wire, epoch)| {
+                .map(|(key, group, kind, wire, epoch, recipients)| {
+                    let recipient_device_ids: Vec<DeviceId> = match recipients {
+                        Some(json) => serde_json::from_str(&json).map_err(|error| {
+                            StoreError::Codec(super::codec::CodecError::Json(error))
+                        })?,
+                        None => Vec::new(),
+                    };
                     let mut idempotency_key = [0u8; 16];
                     if key.len() != 16 {
                         return Err(StoreError::StoreStateInconsistent(
@@ -967,6 +1013,7 @@ impl LocalStore {
                         kind,
                         wire_bytes: wire,
                         proposed_epoch: epoch.map(|e| e as u64),
+                        recipient_device_ids,
                     })
                 })
                 .collect()
@@ -985,6 +1032,175 @@ impl LocalStore {
     }
 
     /// The persisted anti-rollback checkpoint, if one has been accepted.
+    /// The delivery-service sequence cursor for a group: the highest `seq`
+    /// this profile has processed, so sync fetches `?after=` it. 0 = nothing.
+    pub fn delivery_cursor(&self, group_id: ProtoGroupId) -> Result<u64, StoreError> {
+        self.call(move |actor| {
+            let row = actor
+                .connection
+                .query_row(
+                    "SELECT last_sequence FROM citadel_delivery_cursors WHERE group_id = ?1",
+                    [group_id.as_uuid().as_bytes().as_slice()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            Ok(row.map(|s| s.max(0) as u64).unwrap_or(0))
+        })?
+    }
+
+    /// Advance the cursor; never moves backwards.
+    pub fn set_delivery_cursor(&self, group_id: ProtoGroupId, seq: u64) -> Result<(), StoreError> {
+        self.call(move |actor| {
+            actor.connection.execute(
+                "INSERT INTO citadel_delivery_cursors (group_id, last_sequence)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(group_id) DO UPDATE
+                   SET last_sequence = MAX(last_sequence, excluded.last_sequence)",
+                rusqlite::params![group_id.as_uuid().as_bytes().as_slice(), seq as i64],
+            )?;
+            Ok(())
+        })?
+    }
+
+    /// The registered profile, or `None` before registration.
+    pub fn profile(&self) -> Result<Option<ProfileRow>, StoreError> {
+        self.call(|actor| {
+            let row = actor
+                .connection
+                .query_row(
+                    "SELECT account_id, device_id, handle, identity_pubkey, device_pubkey,
+                            credential_json, kt_leaf_index, kt_appended_at
+                       FROM citadel_profile WHERE id = 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, Vec<u8>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Vec<u8>>(3)?,
+                            row.get::<_, Vec<u8>>(4)?,
+                            row.get::<_, Vec<u8>>(5)?,
+                            row.get::<_, i64>(6)?,
+                            row.get::<_, i64>(7)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((account, device, handle, ipk, dpk, cred, leaf, appended)) = row else {
+                return Ok(None);
+            };
+            let credential: DeviceCredential = serde_json::from_slice(&cred)
+                .map_err(|error| StoreError::Codec(super::codec::CodecError::Json(error)))?;
+            Ok(Some(ProfileRow {
+                account_id: AccountId::from_uuid(uuid_from_bytes(&account)?),
+                device_id: DeviceId::from_uuid(uuid_from_bytes(&device)?),
+                handle,
+                identity_pubkey: key32(&ipk)?,
+                device_pubkey: key32(&dpk)?,
+                credential,
+                kt_leaf_index: leaf.max(0) as u64,
+                kt_appended_at: appended,
+            }))
+        })?
+    }
+
+    /// Record the registered profile. Refuses to replace an existing one: a
+    /// profile is one account and one device for its lifetime (ADR-0007 §2).
+    pub fn set_profile(&self, profile: ProfileRow) -> Result<(), StoreError> {
+        self.call(move |actor| {
+            let credential_json = serde_json::to_vec(&profile.credential)
+                .map_err(|error| StoreError::Codec(super::codec::CodecError::Json(error)))?;
+            let changed = actor.connection.execute(
+                "INSERT INTO citadel_profile
+                     (id, account_id, device_id, handle, identity_pubkey, device_pubkey,
+                      credential_json, kt_leaf_index, kt_appended_at, created_at)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO NOTHING",
+                rusqlite::params![
+                    profile.account_id.as_uuid().as_bytes().as_slice(),
+                    profile.device_id.as_uuid().as_bytes().as_slice(),
+                    profile.handle,
+                    profile.identity_pubkey.as_slice(),
+                    profile.device_pubkey.as_slice(),
+                    credential_json,
+                    profile.kt_leaf_index as i64,
+                    profile.kt_appended_at,
+                    super::schema::now_unix_seconds()
+                ],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::StoreStateInconsistent(
+                    "this profile is already registered; a profile never re-registers",
+                ));
+            }
+            Ok(())
+        })?
+    }
+
+    /// Every peer this profile has KT-verified.
+    pub fn peers(&self) -> Result<Vec<PeerRow>, StoreError> {
+        self.call(|actor| {
+            let mut statement = actor.connection.prepare(
+                "SELECT account_id, handle, identity_pubkey, kt_leaf_index, kt_appended_at,
+                        attested_tree_size
+                   FROM citadel_peers ORDER BY handle, account_id",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter()
+                .map(|(account, handle, ipk, leaf, appended, size)| {
+                    Ok(PeerRow {
+                        account_id: AccountId::from_uuid(uuid_from_bytes(&account)?),
+                        handle,
+                        identity_pubkey: key32(&ipk)?,
+                        kt_leaf_index: leaf.max(0) as u64,
+                        kt_appended_at: appended,
+                        attested_tree_size: size.max(0) as u64,
+                    })
+                })
+                .collect()
+        })?
+    }
+
+    /// Insert or refresh a KT-verified peer.
+    pub fn upsert_peer(&self, peer: PeerRow) -> Result<(), StoreError> {
+        self.call(move |actor| {
+            actor.connection.execute(
+                "INSERT INTO citadel_peers
+                     (account_id, handle, identity_pubkey, kt_leaf_index, kt_appended_at,
+                      attested_tree_size, attested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(account_id) DO UPDATE SET
+                     handle = excluded.handle,
+                     identity_pubkey = excluded.identity_pubkey,
+                     kt_leaf_index = excluded.kt_leaf_index,
+                     kt_appended_at = excluded.kt_appended_at,
+                     attested_tree_size = MAX(attested_tree_size, excluded.attested_tree_size),
+                     attested_at = excluded.attested_at",
+                rusqlite::params![
+                    peer.account_id.as_uuid().as_bytes().as_slice(),
+                    peer.handle,
+                    peer.identity_pubkey.as_slice(),
+                    peer.kt_leaf_index as i64,
+                    peer.kt_appended_at,
+                    peer.attested_tree_size as i64,
+                    super::schema::now_unix_seconds()
+                ],
+            )?;
+            Ok(())
+        })?
+    }
+
     pub fn kt_checkpoint(&self) -> Result<Option<KtCheckpoint>, StoreError> {
         self.call(|actor| {
             let row = actor
@@ -1227,6 +1443,7 @@ fn pending_commit(
         kind: "commit".into(),
         wire_bytes,
         proposed_epoch: epoch.map(|e| e as u64),
+        recipient_device_ids: Vec::new(),
     }))
 }
 
@@ -1267,9 +1484,11 @@ fn insert_pending(
         kind,
         wire_bytes,
         proposed_epoch,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_pending_with_key(
     transaction: &rusqlite::Transaction<'_>,
     idempotency_key: [u8; 16],
@@ -1278,11 +1497,19 @@ fn insert_pending_with_key(
     kind: &str,
     wire_bytes: &[u8],
     proposed_epoch: Option<u64>,
+    recipient_device_ids: Option<&[DeviceId]>,
 ) -> Result<(), StoreError> {
+    let recipients_json = recipient_device_ids
+        .map(|ids| {
+            serde_json::to_string(ids)
+                .map_err(|error| StoreError::Codec(super::codec::CodecError::Json(error)))
+        })
+        .transpose()?;
     transaction.execute(
         "INSERT INTO citadel_pending_transmissions
-             (idempotency_key, group_id, kind, wire_bytes, proposed_epoch, operation_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (idempotency_key, group_id, kind, wire_bytes, proposed_epoch, operation_id, created_at,
+              recipient_device_ids)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             idempotency_key.as_slice(),
             group_id.as_uuid().as_bytes().as_slice(),
@@ -1290,8 +1517,22 @@ fn insert_pending_with_key(
             wire_bytes,
             proposed_epoch.map(|e| e as i64),
             operation_id.as_bytes().as_slice(),
-            super::schema::now_unix_seconds()
+            super::schema::now_unix_seconds(),
+            recipients_json
         ],
     )?;
     Ok(())
+}
+
+fn uuid_from_bytes(bytes: &[u8]) -> Result<uuid::Uuid, StoreError> {
+    let array: [u8; 16] = bytes
+        .try_into()
+        .map_err(|_| StoreError::StoreStateInconsistent("a stored id is not 16 bytes"))?;
+    Ok(uuid::Uuid::from_bytes(array))
+}
+
+fn key32(bytes: &[u8]) -> Result<[u8; 32], StoreError> {
+    bytes
+        .try_into()
+        .map_err(|_| StoreError::StoreStateInconsistent("a stored public key is not 32 bytes"))
 }

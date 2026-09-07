@@ -13,10 +13,13 @@
 //! machine rather than acquiring a second copy of the KT-verification and
 //! padding rules that could drift from it.
 
-use crate::credential::{verify_member_credential, CredentialError, IdentityVerifier};
+use crate::credential::{
+    parse_member_credential, verify_member_credential, CredentialError, IdentityVerifier,
+};
 use crate::crypto::{create_config, join_config, retained_past_epochs, MAX_PAST_EPOCHS};
 use crate::identity::DeviceIdentity;
 use crate::padding::{pad, unpad, PadError};
+use citadel_proto::credential::DeviceCredential;
 use citadel_proto::ids::GroupId as ProtoGroupId;
 use openmls::prelude::*;
 use openmls_traits::OpenMlsProvider;
@@ -40,6 +43,11 @@ pub enum GroupError {
     PreparedCommitMismatch,
     #[error("incoming commit conflicts with a pending self-update")]
     PendingCommitConflictDeferred,
+    /// Refused before deserialization: the bytes exceed
+    /// `citadel_proto::MAX_WIRE_BYTES`, so a hostile delivery service cannot
+    /// choose how much a client allocates.
+    #[error("wire message of {0} bytes exceeds the {max} byte bound", max = citadel_proto::MAX_WIRE_BYTES)]
+    WireTooLarge(usize),
     /// ADR-0007 §6: a persisted group whose configuration retains past epochs is
     /// refused rather than loaded, so an OpenMLS default change cannot silently
     /// widen the window in which old-epoch ciphertext stays decryptable.
@@ -158,11 +166,48 @@ impl DmGroup {
     /// verified against the KT log (INV-4) before the group is accepted**; any
     /// failure aborts the join and no group state is created. `welcome_bytes` is
     /// the serialized `MlsMessageOut` of kind Welcome delivered by the DS.
+    /// Who a Welcome would make us a member alongside, WITHOUT joining: each
+    /// member's credential, parsed and signature-checked but not KT-attested.
+    /// A client attests those accounts (a network round trip per unknown
+    /// account) and only then calls [`Self::join_from_welcome`], which
+    /// re-verifies every one of them against the attested set (INV-4).
+    /// Staging reads the init key from storage; run this inside a transaction
+    /// you roll back so nothing about the KeyPackage is consumed.
+    pub fn welcome_members<P: OpenMlsProvider>(
+        provider: &P,
+        welcome_bytes: &[u8],
+    ) -> Result<Vec<DeviceCredential>, GroupError> {
+        if welcome_bytes.len() > citadel_proto::MAX_WIRE_BYTES {
+            return Err(GroupError::WireTooLarge(welcome_bytes.len()));
+        }
+        let msg = MlsMessageIn::tls_deserialize_exact_bytes(welcome_bytes)
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        let welcome = match msg.extract() {
+            MlsMessageBodyIn::Welcome(w) => w,
+            _ => return Err(GroupError::Mls("message was not a Welcome".into())),
+        };
+        let staged = StagedWelcome::new_from_welcome(provider, &join_config(), welcome, None)
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        staged
+            .members()
+            .map(|member| {
+                parse_member_credential(
+                    member.credential.serialized_content(),
+                    &member.signature_key,
+                )
+                .map_err(GroupError::MemberRejected)
+            })
+            .collect()
+    }
+
     pub fn join_from_welcome<P: OpenMlsProvider>(
         provider: &P,
         welcome_bytes: &[u8],
         verifier: &impl IdentityVerifier,
     ) -> Result<Self, GroupError> {
+        if welcome_bytes.len() > citadel_proto::MAX_WIRE_BYTES {
+            return Err(GroupError::WireTooLarge(welcome_bytes.len()));
+        }
         let msg = MlsMessageIn::tls_deserialize_exact_bytes(welcome_bytes)
             .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
         let welcome = match msg.extract() {
@@ -283,6 +328,9 @@ impl DmGroup {
         message_bytes: &[u8],
         verifier: &impl IdentityVerifier,
     ) -> Result<ReceiveOutcome, GroupError> {
+        if message_bytes.len() > citadel_proto::MAX_WIRE_BYTES {
+            return Err(GroupError::WireTooLarge(message_bytes.len()));
+        }
         let msg = MlsMessageIn::tls_deserialize_exact_bytes(message_bytes)
             .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
         let protocol = msg

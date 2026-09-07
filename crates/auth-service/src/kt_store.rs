@@ -180,3 +180,53 @@ pub async fn rebuild_and_verify(pool: &PgPool) -> Result<KtLog, KtStoreError> {
     }
     Ok(log)
 }
+
+/// The earliest account registered under `handle`, if any. Handles are not
+/// unique in the schema, so this is a lookup hint, not an identity claim.
+pub async fn account_by_handle(
+    pool: &PgPool,
+    handle: &str,
+) -> Result<Option<citadel_proto::ids::AccountId>, KtStoreError> {
+    let row =
+        sqlx::query("SELECT id FROM accounts WHERE handle = $1 ORDER BY created_at, id LIMIT 1")
+            .bind(handle)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|row| citadel_proto::ids::AccountId::from_uuid(row.get("id"))))
+}
+
+/// The leaf appended for `account_id` and its zero-based index (`seq - 1`),
+/// found by the account id at its fixed offset inside the signed leaf bytes
+/// (`u16 tag length || tag || account id`), then parsed with
+/// `KtLeaf::from_leaf_bytes`, which rejects anything that is not exactly one
+/// v1 leaf.
+pub async fn leaf_for_account(
+    pool: &PgPool,
+    account_id: citadel_proto::ids::AccountId,
+) -> Result<Option<(u64, citadel_proto::kt::KtLeaf)>, KtStoreError> {
+    // SQL substring is 1-based.
+    let offset = (2 + citadel_proto::kt::KT_LEAF_DOMAIN.len() + 1) as i32;
+    let row = sqlx::query(
+        "SELECT seq, leaf_bytes FROM kt_leaves \
+         WHERE substring(leaf_bytes FROM $2 FOR 16) = $1 ORDER BY seq LIMIT 1",
+    )
+    .bind(&account_id.as_uuid().as_bytes()[..])
+    .bind(offset)
+    .fetch_optional(pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let seq: i64 = row.get("seq");
+    let bytes: Vec<u8> = row.get("leaf_bytes");
+    let index = seq.max(1) as u64 - 1;
+    let leaf =
+        citadel_proto::kt::KtLeaf::from_leaf_bytes(&bytes).ok_or(KtStoreError::SeqMismatch {
+            seq,
+            expected_index: index,
+        })?;
+    if leaf.account_id != account_id {
+        return Ok(None);
+    }
+    Ok(Some((index, leaf)))
+}

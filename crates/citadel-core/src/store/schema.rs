@@ -23,7 +23,7 @@ use super::error::StoreError;
 use rusqlite::{Connection, Transaction};
 
 /// The highest application schema version this build implements.
-pub const APP_SCHEMA_VERSION: i64 = 1;
+pub const APP_SCHEMA_VERSION: i64 = 2;
 
 /// The value of the `schema_sentinel` metadata row. §3's open sequence requires
 /// a schema sentinel in addition to schema access, so that a database that
@@ -43,8 +43,10 @@ pub mod meta_key {
 }
 
 /// Ordered, immutable application migrations. Index + 1 is the version.
-const MIGRATIONS: [&str; APP_SCHEMA_VERSION as usize] =
-    [include_str!("migrations/V1__initial.sql")];
+const MIGRATIONS: [&str; APP_SCHEMA_VERSION as usize] = [
+    include_str!("migrations/V1__initial.sql"),
+    include_str!("migrations/V2__profile_peers_recipients.sql"),
+];
 
 /// Create the migration history table if absent, then apply anything missing.
 ///

@@ -164,6 +164,68 @@ pub struct ConsistencyProof {
 /// head that no longer match. The client verifies `proof` against
 /// `signed_tree_head` under its pinned anchor (selected by
 /// `signed_tree_head.tbs.key_id`); see docs/protocol/auth.md.
+/// `GET /v1/kt/leaf?account=<id>` or `?handle=<h>`: where an account's leaf
+/// sits in the log. A **hint**, never trusted: the client rebuilds the
+/// [`KtLeaf`] from it and verifies an inclusion proof against a signed tree
+/// head it has verified itself (INV-4). Handles are not unique server-side;
+/// a handle lookup returns the earliest registration and the client decides
+/// what to do with the identity key it verifies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KtLeafInfo {
+    pub account_id: AccountId,
+    pub handle: String,
+    pub identity_pubkey: IdentityPublicKey,
+    pub leaf_index: u64,
+    pub appended_at: i64,
+}
+
+impl KtLeafInfo {
+    /// The leaf these coordinates claim, for `kt_log::verify_inclusion`.
+    pub fn to_leaf(&self) -> KtLeaf {
+        KtLeaf {
+            account_id: self.account_id,
+            handle: self.handle.clone(),
+            identity_pubkey: self.identity_pubkey,
+            appended_at: self.appended_at,
+        }
+    }
+}
+
+impl KtLeaf {
+    /// Inverse of [`KtLeaf::leaf_bytes`]. `None` for anything that is not
+    /// exactly one leaf under the v1 domain tag.
+    pub fn from_leaf_bytes(bytes: &[u8]) -> Option<Self> {
+        let tag = KT_LEAF_DOMAIN.as_bytes();
+        let mut at = 0usize;
+        let take = |at: &mut usize, n: usize| -> Option<&[u8]> {
+            let out = bytes.get(*at..*at + n)?;
+            *at += n;
+            Some(out)
+        };
+        let tag_len = u16::from_be_bytes(take(&mut at, 2)?.try_into().ok()?) as usize;
+        if take(&mut at, tag_len)? != tag {
+            return None;
+        }
+        let account_id =
+            AccountId::from_uuid(uuid::Uuid::from_bytes(take(&mut at, 16)?.try_into().ok()?));
+        let handle_len = u16::from_be_bytes(take(&mut at, 2)?.try_into().ok()?) as usize;
+        let handle = std::str::from_utf8(take(&mut at, handle_len)?)
+            .ok()?
+            .to_string();
+        let identity_pubkey = IdentityPublicKey(take(&mut at, 32)?.try_into().ok()?);
+        let appended_at = i64::from_be_bytes(take(&mut at, 8)?.try_into().ok()?);
+        if at != bytes.len() {
+            return None;
+        }
+        Some(Self {
+            account_id,
+            handle,
+            identity_pubkey,
+            appended_at,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KtProofResponse {
     pub proof: InclusionProof,
@@ -188,6 +250,29 @@ mod tests {
         let mut other = leaf.clone();
         other.handle = "alicf".into();
         assert_ne!(leaf.leaf_bytes(), other.leaf_bytes());
+    }
+
+    #[test]
+    fn leaf_bytes_parse_back_exactly() {
+        let leaf = KtLeaf {
+            account_id: AccountId::from_uuid(Uuid::from_bytes([3; 16])),
+            handle: "carol".into(),
+            identity_pubkey: IdentityPublicKey([4; 32]),
+            appended_at: -7,
+        };
+        let bytes = leaf.leaf_bytes();
+        assert_eq!(KtLeaf::from_leaf_bytes(&bytes), Some(leaf.clone()));
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert_eq!(KtLeaf::from_leaf_bytes(&trailing), None, "trailing input");
+        assert_eq!(
+            KtLeaf::from_leaf_bytes(&bytes[..bytes.len() - 1]),
+            None,
+            "truncated"
+        );
+        let mut wrong_tag = bytes.clone();
+        wrong_tag[2] ^= 1;
+        assert_eq!(KtLeaf::from_leaf_bytes(&wrong_tag), None, "domain tag");
     }
 
     #[test]

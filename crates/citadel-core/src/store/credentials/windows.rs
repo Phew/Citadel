@@ -40,13 +40,20 @@ impl NativeCredentialStore {
         }
     }
 
-    /// A store under an isolated service identity, for tests that must drive the
-    /// real OS backend. Not compiled into production builds.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn with_isolated_service(service: impl Into<String>) -> Self {
+    /// A store under a caller-chosen service identity, for hosts that keep
+    /// more than one profile per OS user (each profile then owns its own
+    /// three entries). Production hosts default to [`SERVICE`]; tests use a
+    /// per-process identity so they cannot touch a live profile.
+    pub fn with_service(service: impl Into<String>) -> Self {
         Self {
             service: service.into(),
         }
+    }
+
+    /// Alias kept for the existing conformance tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_isolated_service(service: impl Into<String>) -> Self {
+        Self::with_service(service)
     }
 
     /// `Service:item` as a NUL-terminated UTF-16 target name.

@@ -17,7 +17,10 @@ pub use delivery::{
     GatewayClientFrame, GatewayServerFrame, MessagesPage, SubmitMessageRequest,
     SubmitMessageResponse, MESSAGES_PAGE_LIMIT,
 };
+pub use envelope::MAX_WIRE_BYTES;
 pub use envelope::{CommitConflict, Envelope, EnvelopeKind, WireVersion, WIRE_VERSION};
 pub use error::{ErrorCode, ErrorResponse};
 pub use ids::{AccountId, ChannelId, DeviceId, GroupId, HouseId, MessageId};
-pub use kt::{ConsistencyProof, InclusionProof, KeyId, KtLeaf, KtProofResponse, SignedTreeHead};
+pub use kt::{
+    ConsistencyProof, InclusionProof, KeyId, KtLeaf, KtLeafInfo, KtProofResponse, SignedTreeHead,
+};

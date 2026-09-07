@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 /// Current wire format version. Bump only with an ADR and coordinated clients.
 pub const WIRE_VERSION: u16 = 1;
 
+/// Upper bound on one MLS wire message (the decoded envelope payload) a client
+/// will hand to OpenMLS. A hostile delivery service can send arbitrarily large
+/// bytes; this is checked BEFORE deserialization so the bound, not the parser,
+/// decides how much memory an attacker can make a client allocate. 1 MiB is
+/// far above any M2 DM message (padding buckets top out at 16 KiB and an
+/// 8-member Welcome is tens of KiB); M3 channels revisit it with real sizes.
+pub const MAX_WIRE_BYTES: usize = 1 << 20;
+
 /// Alias for documentation at call sites.
 pub type WireVersion = u16;
 
