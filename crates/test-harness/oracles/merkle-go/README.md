@@ -26,11 +26,11 @@ cd crates/test-harness/oracles/merkle-go
 go run . > ../../../kt-log/tests/fixtures/merkle_rfc6962.json
 ```
 
-The output is byte-stable (same corpora in → identical bytes out), so a
-regenerate-and-diff CI step can detect drift between the oracle and the
-committed fixtures. That CI wiring is owned by K3 (issue 001); the committed
-fixtures and the consuming test (`crates/kt-log/tests/go_oracle_fixtures.rs`)
-are owned by Opus.
+The output is byte-stable (same corpora in → identical bytes out), and the
+`merkle-oracle` job in `.github/workflows/ci.yml` regenerates it and `cmp`s it
+against the committed file on every run, so drift between the oracle and the
+fixture fails CI rather than going unnoticed. The consuming test is
+`crates/kt-log/tests/go_oracle_fixtures.rs`.
 
 The fixture contains, per corpus:
 
@@ -53,5 +53,8 @@ translation of `tree.rs`; keep it that way — an oracle that copies the code
 under test proves nothing. No third-party Go modules (`go.mod` has no
 `require`), so there is no `go.sum` and nothing to audit at supply-chain level.
 
-The Go toolchain is **not** a build- or CI-time dependency of Citadel: the
-fixtures are committed. Go is needed only to regenerate them.
+The Go toolchain is **not** a build-time dependency of Citadel: the fixtures
+are committed and `cargo test` never invokes Go. CI uses the Go already on the
+`ubuntu-latest` image for the regenerate-and-diff job only. Without Go
+locally, `docker run --rm -v "$PWD:/src" -w /src/crates/test-harness/oracles/merkle-go golang:1.22-alpine go run .`
+produces the same bytes.

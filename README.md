@@ -83,6 +83,7 @@ flowchart LR
 Prerequisites: Rust (pinned by [`rust-toolchain.toml`](rust-toolchain.toml)), Docker Compose v2, [`just`](https://github.com/casey/just) (optional).
 
 ```bash
+cp .env.example .env       # dev-stack settings, including the (public) dev KT log seed
 just setup && just check   # toolchain + fmt + clippy + unit tests
 just dev                   # full local stack: postgres, minio, four services
 ```
