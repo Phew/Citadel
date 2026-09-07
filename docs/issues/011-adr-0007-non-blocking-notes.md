@@ -1,8 +1,48 @@
 # 011: ADR-0007 non-blocking notes, to land with the store build
 
-**Status:** OPEN. **Raised by:** K3, in the Amendment 1 re-review
+**Status:** **CLOSED** — both notes landed with the store build, in the same PR.
+**Raised by:** K3, in the Amendment 1 re-review
 (`docs/issues/009` rev 2, merged `289c570`, verdict APPROVE).
-**Owner:** the core lane. **Blocks:** nothing. **Must land with:** the store build.
+**Owner:** the core lane. **Blocks:** nothing.
+
+## How each was closed
+
+- **N1** — the mechanism is named and implemented as a **behavioral probe**:
+  `citadel_core::store::open::probe_extension_loading_is_refused` runs
+  `SELECT load_extension(<a name that does not exist>)` at the end of every open
+  sequence and requires the exact `not authorized` refusal, aborting the open otherwise.
+  It is wired into `store_release_uses_only_pinned_sqlcipher`, which additionally asserts
+  `ENABLE_LOAD_EXTENSION` **is** compiled in — so the test would notice if the probe ever
+  started passing for the wrong reason. Requiring that exact string is what separates a
+  refusal from "reached the loader and could not find the file", which is what a set flag
+  would produce. Folded into ADR-0007 Amendment 1 §A.5 and named in §A.7. The rusqlite
+  feature-gating argument is recorded there as *supporting*, explicitly not as a
+  replacement for the probe.
+- **N2** — FTS3 now has its own row in the §A.5 flag table, alongside FTS5, with the same
+  accepted reasoning and the same `build.rs` line citations.
+
+## One finding from the build that neither note anticipated
+
+Implementing §6's fail-closed past-epoch check turned up an API gap worth recording:
+**openmls 0.8.1 exposes `max_past_epochs()` on `MlsGroupCreateConfig` but not on
+`MlsGroupJoinConfig`**, whose field is `pub(crate)` with no accessor
+(`openmls-0.8.1/src/group/mls_group/config.rs:44-81`; the getter at `:191` belongs to the
+create config). `MlsGroup::configuration()` returns the *join* config, so the obvious
+implementation of "loading a group whose persisted configuration retains past epochs fails
+closed" does not compile.
+
+`crate::crypto::retained_past_epochs` resolves it by reading the field out of the config's
+serde representation — which is the same representation the storage provider persists as
+the `join_group_config` row, so the check reads what is actually on disk rather than an
+in-memory constant. `store_codec_v1_roundtrips_golden_corpus_and_migrates` asserts that
+persisted row really carries `max_past_epochs: 0`, and
+`a_group_whose_persisted_configuration_retains_past_epochs_fails_closed` rewrites the row
+to a widened config and proves the load refuses. An unreadable field is its own error
+(`GroupError::PastEpochRetentionUnreadable`) and is never treated as zero.
+
+---
+
+## The original notes, retained for the record
 
 ADR-0007 and Amendment 1 were ACCEPTED (charge, 2026-07-26) with these two notes
 deliberately **not** folded first. They are recorded here rather than left in a review

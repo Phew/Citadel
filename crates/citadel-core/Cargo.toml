@@ -1,6 +1,6 @@
 [package]
 name = "citadel-core"
-description = "Client MLS group state, credential verification, and message padding."
+description = "Client MLS group state, credential verification, message padding, and the local encrypted client store."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,18 +11,77 @@ citadel-proto = { workspace = true }
 # Group crypto: OpenMLS (RFC 9420), single ciphersuite v1 (PLAN §4). citadel-core
 # is a CLIENT crate and legitimately owns crypto (INV-2); the rule-6 confinement
 # check covers only the service crates. No hand-rolled crypto (INV-10).
-openmls = "0.8"
+openmls = "=0.8.1"
 openmls_rust_crypto = "0.5"
-openmls_traits = "0.5"
+openmls_traits = "=0.5.0"
+# ADR-0007 §1 as amended by Amendment 1 §A: the local encrypted client store.
+#
+# SQLCipher whole-database encryption via the STOCK bundled amalgamation that
+# libsqlite3-sys 0.30.1 ships (SQLCipher 4.5.7 community, embedded SQLite
+# 3.45.3). M2 owns no source overlay; the reproducibility and provenance
+# program is deferred to its own ADR by Amendment 1 §A.2.
+#
+# `-vendored-openssl` is what makes SQLCipher's page codec self-contained on
+# every target in the release matrix (the Windows target has no system OpenSSL
+# to link). It is also what admits a vendored OpenSSL C codebase into this
+# process, which holds plaintext, MLS secrets, and signing seeds. That is a
+# knowingly accepted consequence recorded in ADR-0007 Amendment 1 §B.3, and it
+# is why `deny.toml`'s graph-wide `openssl-sys` ban carries
+# `wrappers = ["libsqlite3-sys"]`. §B.4 lists what would reopen it.
+rusqlite = { version = "=0.32.1", features = ["bundled-sqlcipher-vendored-openssl"] }
+# OpenMLS's own published storage provider. Alternative 4 rejected hand-writing
+# the large versioned storage trait: a local duplicate would create avoidable
+# secret-deletion and upgrade risk in exactly the code that deletes MLS secrets.
+openmls_sqlite_storage = "=0.2.0"
 # Client-side Ed25519 verification of device credentials against the KT-attested
 # identity key (INV-4). A vetted library, not a hand-rolled primitive (INV-10).
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
-serde_json = { workspace = true }
+serde = { workspace = true }
+# ADR-0007 §1 pins the storage codec's exact serializer and feature set. The
+# `preserve_order` feature must stay OFF so `serde_json::Value` object maps keep
+# insertion order and `citadel-openmls-json-v1` stays byte-deterministic.
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 zeroize = "1"
 
+# ADR-0007 §2: the Windows adapter calls CredReadW/CredWriteW/CredDeleteW
+# directly because keyring 3.6.3 hard-codes CRED_PERSIST_ENTERPRISE
+# (`src/windows.rs:246`) and enterprise roaming is forbidden for this key.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security_Credentials",
+    # MoveFileExW with MOVEFILE_WRITE_THROUGH, for the durable install of the
+    # staged database (ADR-0007 §2).
+    "Win32_Storage_FileSystem",
+] }
+
+# ADR-0007 §2: macOS uses keyring's concrete Apple-native builder. The default
+# builder is never constructed — it can silently fall back to a mock store.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+
+# ADR-0007 §2: Linux uses keyring's concrete synchronous Secret Service builder.
+# `crypto-rust` is mandatory so the D-Bus session negotiates Diffie-Hellman;
+# a `Plain` negotiation is rejected.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = [
+    "sync-secret-service",
+    "crypto-rust",
+] }
+
+# ADR-0007 §2: the profile lock and the database must be opened without
+# following symbolic links. O_NOFOLLOW has no std wrapper.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 # Exposes `citadel_core::testing` for the harness and adversarial suite to build
-# valid and deliberately-invalid identities against real client code.
+# valid and deliberately-invalid identities against real client code, and
+# `citadel_core::store::evidence` so the M2 forward-secrecy test can capture a
+# store snapshot and reopen it as an attacker holding the correct key.
 testing = []

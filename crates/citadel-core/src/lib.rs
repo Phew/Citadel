@@ -3,15 +3,21 @@
 //! **This is the only place plaintext message content may exist (INV-1, INV-2).**
 //! citadel-core owns the OpenMLS group state machine (create/join/send/receive),
 //! member-credential verification against the KT log (INV-4), length-hiding
-//! padding, and delivery envelope construction. It speaks the frozen
-//! `citadel-proto` wire contracts (ADR-0005) and exposes the
-//! [`transport::DeliveryTransport`] integration seam.
+//! padding, the local encrypted client store (ADR-0007), and delivery envelope
+//! construction. It speaks the frozen `citadel-proto` wire contracts (ADR-0005)
+//! and exposes the [`transport::DeliveryTransport`] integration seam.
+//!
+//! MLS state is durable: [`store::LocalStore`] persists it into a SQLCipher
+//! database whose 32-byte key lives in the OS credential store. The in-memory
+//! [`crypto::EphemeralProvider`] remains for work that has no store yet, and is
+//! named so it cannot be mistaken for the persisted one.
 
 pub mod credential;
 pub mod crypto;
 pub mod group;
 pub mod identity;
 pub mod padding;
+pub mod store;
 pub mod transport;
 
 #[cfg(any(test, feature = "testing"))]

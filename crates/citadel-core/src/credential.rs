@@ -24,6 +24,23 @@ pub trait IdentityVerifier {
     fn is_kt_attested(&self, account_id: AccountId, identity_pubkey: &IdentityPublicKey) -> bool;
 }
 
+// Forwarding impls so a verifier can be shared across the store actor thread as
+// `Arc<dyn IdentityVerifier + Send + Sync>` and still satisfy the
+// `&impl IdentityVerifier` parameter every group operation takes. Without these,
+// the persisted path would need its own verification entry point, which is
+// exactly how two copies of an INV-4 rule start to drift apart.
+impl<T: IdentityVerifier + ?Sized> IdentityVerifier for &T {
+    fn is_kt_attested(&self, account_id: AccountId, identity_pubkey: &IdentityPublicKey) -> bool {
+        (**self).is_kt_attested(account_id, identity_pubkey)
+    }
+}
+
+impl<T: IdentityVerifier + ?Sized> IdentityVerifier for std::sync::Arc<T> {
+    fn is_kt_attested(&self, account_id: AccountId, identity_pubkey: &IdentityPublicKey) -> bool {
+        (**self).is_kt_attested(account_id, identity_pubkey)
+    }
+}
+
 /// Why a member credential was rejected. Any failure aborts the join (INV-4).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CredentialError {
