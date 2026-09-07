@@ -63,13 +63,10 @@ impl ProfilePaths {
         })
     }
 
-    /// A profile rooted at an explicit directory.
-    ///
-    /// Test-configuration only. Production always uses
-    /// [`ProfilePaths::platform_default`], so there is no runtime setting, no
-    /// environment variable, and no command-line flag that relocates a live
-    /// profile out of the platform application-data directory.
-    #[cfg(any(test, feature = "testing"))]
+    /// A profile under a caller-chosen root. Hosts whose application-data
+    /// directory is not derivable from the environment (iOS, Android, a
+    /// second profile on one machine, tests) use this; every containment
+    /// check still applies to the root given.
     pub fn at_root(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
