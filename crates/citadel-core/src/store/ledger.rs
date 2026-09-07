@@ -54,7 +54,7 @@ impl OperationId {
     pub fn generate() -> Result<Self, StoreError> {
         let rand = RustCrypto::default();
         let bytes: [u8; 16] = rand.random_array().map_err(|error| {
-            StoreError::Migration(format!("OS random source failed: {error:?}"))
+            StoreError::CryptoProvider(format!("OS random source failed: {error:?}"))
         })?;
         Ok(Self(bytes))
     }
@@ -138,7 +138,7 @@ pub fn fingerprint<R: Serialize>(kind: OperationKind, request: &R) -> Result<Vec
 
     RustCrypto::default()
         .hash(HashType::Sha2_256, &input)
-        .map_err(|error| StoreError::Migration(format!("sha-256 unavailable: {error:?}")))
+        .map_err(|error| StoreError::CryptoProvider(format!("sha-256 unavailable: {error:?}")))
 }
 
 /// What a matching, still-retained ledger row returns.

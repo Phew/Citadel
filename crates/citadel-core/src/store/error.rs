@@ -84,11 +84,6 @@ pub enum StoreError {
     #[error("commit outcome is indeterminate and requires reconciliation")]
     StoreOutcomeIndeterminate,
 
-    /// The persisted group configuration retains past epochs. ADR-0007 §6 pins
-    /// `max_past_epochs = 0` and fails closed if an upgrade widens it.
-    #[error("persisted group configuration retains {0} past epoch(s); ADR-0007 §6 pins zero")]
-    PastEpochRetentionRejected(usize),
-
     /// A group was addressed that this profile does not hold.
     #[error("no such group in this store")]
     UnknownGroup,
@@ -155,6 +150,18 @@ pub enum StoreError {
     /// state, so the store is left exactly as it was.
     #[error("migration: {0}")]
     Migration(String),
+
+    /// A codec migration (ADR-0007 §1) could not proceed: the live provider
+    /// schema drifted from the pin, or a value failed to decode or encode. The
+    /// caller rolls the transaction back; nothing is partially rewritten.
+    #[error("codec migration: {0}")]
+    CodecMigration(String),
+
+    /// The OpenMLS crypto provider refused a primitive this store relies on
+    /// (CSPRNG bytes, SHA-256). Not a migration failure, though it was once
+    /// reported as one.
+    #[error("crypto provider: {0}")]
+    CryptoProvider(String),
 }
 
 impl StoreError {

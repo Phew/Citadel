@@ -162,9 +162,14 @@ impl ReopenedSnapshot {
     /// retains. ADR-0007 §6's evidence asserts this is zero rather than assuming
     /// the pin held across a restart.
     ///
-    /// `None` means the field could not be read at all, which an openmls upgrade
-    /// that renamed it would cause. A test must treat that as a failure, not as
-    /// zero.
+    /// `DmGroup::load` fails closed before returning a group whose persisted
+    /// pin is unreadable (`GroupError::PastEpochRetentionUnreadable`, which an
+    /// openmls upgrade that renamed the field would cause) or non-zero
+    /// (`GroupError::PastEpochRetentionRejected`). So for a group this build
+    /// can load at all the answer is `Ok(Some(0))` by construction, and the
+    /// two failure modes arrive as `StoreError::Group(_)`. The `Option` is the
+    /// loaded group's accessor shape, kept so a test asserts `Some(0)`
+    /// explicitly rather than inferring it from the load having succeeded.
     pub fn max_past_epochs(&mut self, group_id: ProtoGroupId) -> Result<Option<usize>, StoreError> {
         let transaction = self.connection.transaction()?;
         let provider = StoreProvider::new(&transaction);

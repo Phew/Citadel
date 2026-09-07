@@ -1,6 +1,6 @@
 //! ADR-0007 Evidence, for the tests that can run without release CI.
 //!
-//! Names match the ADR Evidence list; four named tests and one half of `store_codec_v1_roundtrips_golden_corpus_and_migrates` are absent:
+//! Names match the ADR Evidence list; four named tests are absent:
 //!
 //! - `store_release_uses_only_the_target_native_credential_backend`, and the
 //!   three-desktop-target half of `store_release_uses_only_pinned_sqlcipher`,
@@ -14,12 +14,12 @@
 //!   `mls-spec` / AWS-LC differential oracle, which nobody has built yet.
 //! - `store_hot_path_latency_is_measured_on_all_desktop_targets` needs the
 //!   three-target benchmark recipe.
-//! - Its single-transaction test v2 codec migration is deferred with charge's sign-off before any release that ships a codec version bump.
 //!
 //! Everything else below runs against real SQLCipher and the real OpenMLS
 //! provider, on a temporary profile directory with a credential-store double.
 
-use super::codec::{CitadelOpenMlsJsonCodecV1, CODEC_BOUND_VERSIONS, CODEC_ID};
+use super::codec::{CitadelOpenMlsJsonCodecV1, CodecError, CODEC_BOUND_VERSIONS, CODEC_ID};
+use super::codec_migration::{migrate_codec, CodecIdentity, CODEC_V1, PROVIDER_CODEC_COLUMNS};
 use super::credentials::double::{Call, CredentialStoreDouble, Injected};
 use super::credentials::{CredentialStore, SecretItem};
 use super::error::StoreError;
@@ -51,6 +51,7 @@ use openmls_sqlite_storage::Codec;
 use openmls_traits::crypto::OpenMlsCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::path::PathBuf;
@@ -65,20 +66,35 @@ use zeroize::Zeroizing;
 // ---------------------------------------------------------------------------
 
 struct Fixture {
-    dir: TempDir,
+    _dir: TempDir,
+    /// The temporary directory's canonical path. The store opens its database
+    /// with `SQLITE_OPEN_NOFOLLOW`, which SQLite enforces against **every**
+    /// component of the path (`SQLITE_CANTOPEN_SYMLINK`), not only the last.
+    /// On macOS the default temporary directory is under `/var`, itself a
+    /// symlink to `/private/var`, so an uncanonicalized fixture root fails
+    /// every open there while passing on Linux. Production profile roots
+    /// (`ProfilePaths::platform_default`) contain no symlink, and a user who
+    /// symlinks one is refused on purpose (ADR-0007 §2).
+    root: PathBuf,
     credentials: Arc<CredentialStoreDouble>,
 }
 
 impl Fixture {
     fn new() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir
+            .path()
+            .canonicalize()
+            .expect("canonical temporary directory");
         Self {
-            dir: tempfile::tempdir().expect("tempdir"),
+            _dir: dir,
+            root,
             credentials: Arc::new(CredentialStoreDouble::new()),
         }
     }
 
     fn paths(&self) -> ProfilePaths {
-        ProfilePaths::at_root(self.dir.path().join("profile"))
+        ProfilePaths::at_root(self.root.join("profile"))
     }
 
     fn open(&self) -> Result<LocalStore, StoreError> {
@@ -852,6 +868,156 @@ fn the_outcome_ring_expires_payloads_without_ever_reapplying_the_operation() {
 // store_codec_v1_roundtrips_golden_corpus_and_migrates
 // ---------------------------------------------------------------------------
 
+/// The corpus operation matrix (ADR-0007 §1): one deterministic group, one
+/// application message, one KeyPackage, written through the real provider in
+/// one transaction. Shared by the golden-corpus test and the two migration
+/// evidence tests so they all reason about the same rows.
+fn write_corpus(connection: &mut rusqlite::Connection) {
+    let identity = corpus_identity();
+    let group_id = GroupId::from_uuid(Uuid::from_bytes([0x55; 16]));
+    let transaction = connection.transaction().expect("corpus transaction");
+    {
+        let provider = CorpusProvider::new(&transaction);
+        let config = MlsGroupCreateConfig::builder()
+            .ciphersuite(CIPHERSUITE)
+            .use_ratchet_tree_extension(true)
+            .max_past_epochs(MAX_PAST_EPOCHS)
+            .lifetime(Lifetime::init(1_600_000_000, 1_900_000_000))
+            .build();
+        let mut group = MlsGroup::new_with_group_id(
+            &provider,
+            &identity.signer,
+            &config,
+            openmls::prelude::GroupId::from_slice(group_id.as_uuid().as_bytes()),
+            identity.credential_with_key.clone(),
+        )
+        .expect("create");
+        group
+            .create_message(&provider, &identity.signer, b"corpus")
+            .expect("send");
+        KeyPackage::builder()
+            .key_package_lifetime(Lifetime::init(1_600_000_000, 1_900_000_000))
+            .build(
+                CIPHERSUITE,
+                &provider,
+                &identity.signer,
+                identity.credential_with_key.clone(),
+            )
+            .expect("key package");
+    }
+    transaction.commit().expect("commit corpus");
+}
+
+/// Every codec-encoded provider value, keys included, addressed by
+/// `(table, rowid, column)`. The migration evidence compares whole maps, so
+/// a rewrite that added, dropped, or moved a value is a failure and not a
+/// count coincidence.
+fn provider_blobs(connection: &rusqlite::Connection) -> BTreeMap<(String, i64, String), Vec<u8>> {
+    let mut out = BTreeMap::new();
+    for (table, columns) in PROVIDER_CODEC_COLUMNS {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT rowid, {} FROM {table}",
+                columns.join(", ")
+            ))
+            .expect("prepare");
+        let rows = statement
+            .query_map([], |row| {
+                let rowid: i64 = row.get(0)?;
+                let mut values = Vec::with_capacity(columns.len());
+                for (index, column) in columns.iter().enumerate() {
+                    values.push(((*column).to_string(), row.get::<_, Vec<u8>>(index + 1)?));
+                }
+                Ok((rowid, values))
+            })
+            .expect("query");
+        for row in rows {
+            let (rowid, values) = row.expect("row");
+            for (column, bytes) in values {
+                assert!(
+                    out.insert(((*table).to_string(), rowid, column), bytes)
+                        .is_none(),
+                    "duplicate provider value address"
+                );
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// test codecs for the ADR-0007 §1 migration evidence
+// ---------------------------------------------------------------------------
+
+/// A second codec that exists only so the migration primitive can be proven
+/// before a real v2 does: v1 bytes behind a fixed prefix that v1 rejects as
+/// malformed JSON. That makes "decodes under v2, fails under v1" a real
+/// distinction rather than two views of the same bytes.
+#[derive(Debug, Default, Clone, Copy)]
+struct TestCodecV2;
+
+const TEST_CODEC_V2_PREFIX: &[u8] = b"citadel-test-codec-v2\0";
+
+const TEST_CODEC_V2: CodecIdentity = CodecIdentity {
+    id: "citadel-test-codec-v2",
+    bound_versions:
+        "openmls=0.8.1;openmls_traits=0.5.0;openmls_sqlite_storage=0.2.0;provider_schema=1;test=v2",
+};
+
+impl Codec for TestCodecV2 {
+    type Error = CodecError;
+
+    fn to_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
+        let mut out = TEST_CODEC_V2_PREFIX.to_vec();
+        out.extend(CitadelOpenMlsJsonCodecV1::to_vec(value)?);
+        Ok(out)
+    }
+
+    fn from_slice<T: serde::de::DeserializeOwned>(slice: &[u8]) -> Result<T, CodecError> {
+        let body = slice.strip_prefix(TEST_CODEC_V2_PREFIX).ok_or_else(|| {
+            CodecError::Json(<serde_json::Error as serde::de::Error>::custom(
+                "missing test v2 prefix",
+            ))
+        })?;
+        CitadelOpenMlsJsonCodecV1::from_slice(body)
+    }
+}
+
+thread_local! {
+    /// How many values `FailingTestCodecV2` has encoded on this thread.
+    static FAILING_CODEC_ENCODED: Cell<usize> = const { Cell::new(0) };
+    /// The zero-based encode call that `FailingTestCodecV2` refuses.
+    static FAILING_CODEC_FAIL_AT: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// `TestCodecV2` whose encoder fails on one chosen call, so the rollback
+/// evidence can inject a failure after real rows were already rewritten inside
+/// the migration's transaction.
+#[derive(Debug, Default, Clone, Copy)]
+struct FailingTestCodecV2;
+
+impl Codec for FailingTestCodecV2 {
+    type Error = CodecError;
+
+    fn to_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
+        let call = FAILING_CODEC_ENCODED.with(|counter| {
+            let call = counter.get();
+            counter.set(call + 1);
+            call
+        });
+        if FAILING_CODEC_FAIL_AT.with(|fail_at| fail_at.get()) == Some(call) {
+            return Err(CodecError::Json(
+                <serde_json::Error as serde::de::Error>::custom("injected encoder failure"),
+            ));
+        }
+        TestCodecV2::to_vec(value)
+    }
+
+    fn from_slice<T: serde::de::DeserializeOwned>(slice: &[u8]) -> Result<T, CodecError> {
+        TestCodecV2::from_slice(slice)
+    }
+}
+
 #[test]
 fn store_codec_v1_roundtrips_golden_corpus_and_migrates() {
     let fixture = Fixture::new();
@@ -863,41 +1029,7 @@ fn store_codec_v1_roundtrips_golden_corpus_and_migrates() {
     let key_owned = super::key::DatabaseEncryptionKey::from_bytes(key);
     let mut connection =
         open_hardened(&paths.database(), &key_owned, OpenIntent::Existing).expect("reopen");
-    let identity = corpus_identity();
-    let group_id = GroupId::from_uuid(Uuid::from_bytes([0x55; 16]));
-    {
-        let transaction = connection.transaction().expect("corpus transaction");
-        {
-            let provider = CorpusProvider::new(&transaction);
-            let config = MlsGroupCreateConfig::builder()
-                .ciphersuite(CIPHERSUITE)
-                .use_ratchet_tree_extension(true)
-                .max_past_epochs(MAX_PAST_EPOCHS)
-                .lifetime(Lifetime::init(1_600_000_000, 1_900_000_000))
-                .build();
-            let mut group = MlsGroup::new_with_group_id(
-                &provider,
-                &identity.signer,
-                &config,
-                openmls::prelude::GroupId::from_slice(group_id.as_uuid().as_bytes()),
-                identity.credential_with_key.clone(),
-            )
-            .expect("create");
-            group
-                .create_message(&provider, &identity.signer, b"corpus")
-                .expect("send");
-            KeyPackage::builder()
-                .key_package_lifetime(Lifetime::init(1_600_000_000, 1_900_000_000))
-                .build(
-                    CIPHERSUITE,
-                    &provider,
-                    &identity.signer,
-                    identity.credential_with_key.clone(),
-                )
-                .expect("key package");
-        }
-        transaction.commit().expect("commit corpus");
-    }
+    write_corpus(&mut connection);
 
     // The identifier and version tuple were written BEFORE the first OpenMLS
     // record, so they are readable and exact.
@@ -1106,7 +1238,100 @@ fn store_codec_v1_roundtrips_golden_corpus_and_migrates() {
         signature_keys, 0,
         "the signing seed lives in the OS credential store; a copy in the          database would be a second place to compromise"
     );
+
+    // ADR-0007 §1's migration primitive, driven against a test v2 codec in ONE
+    // transaction: every value (keys included) is rewritten, and the identity
+    // moves last.
+    let before = provider_blobs(&connection);
+    let report = {
+        let transaction = connection.transaction().expect("migration transaction");
+        let report = migrate_codec::<CitadelOpenMlsJsonCodecV1, TestCodecV2>(
+            &transaction,
+            CODEC_V1,
+            TEST_CODEC_V2,
+        )
+        .expect("migrate v1 -> test v2");
+        transaction.commit().expect("commit migration");
+        report
+    };
+    assert_eq!(report.tables, PROVIDER_CODEC_COLUMNS.len());
+    assert_eq!(
+        report.rows,
+        corpus.len(),
+        "one rewritten row per manifest entity"
+    );
+    assert_eq!(
+        report.values,
+        before.len(),
+        "every codec-encoded value, keys included, was rewritten"
+    );
+    assert!(
+        report.values > report.rows,
+        "keys are codec-encoded too, so there must be more values than rows"
+    );
+    let after = provider_blobs(&connection);
+    assert_eq!(
+        after.keys().collect::<Vec<_>>(),
+        before.keys().collect::<Vec<_>>(),
+        "a migration must neither add nor drop a value"
+    );
+    for (location, bytes) in &after {
+        let migrated: serde_json::Value = TestCodecV2::from_slice(bytes)
+            .unwrap_or_else(|error| panic!("{location:?} does not decode under v2: {error}"));
+        let under_v1: Result<serde_json::Value, _> = CitadelOpenMlsJsonCodecV1::from_slice(bytes);
+        assert!(
+            under_v1.is_err(),
+            "{location:?} still decodes under v1 after the migration"
+        );
+        let original: serde_json::Value = CitadelOpenMlsJsonCodecV1::from_slice(&before[location])
+            .expect("the pre-migration bytes were v1");
+        assert_eq!(
+            migrated, original,
+            "{location:?} changed meaning across the migration"
+        );
+    }
+    assert_eq!(
+        read_metadata(&connection, meta_key::CODEC_ID).expect("meta"),
+        Some(TEST_CODEC_V2.id.to_string())
+    );
+    assert_eq!(
+        read_metadata(&connection, meta_key::CODEC_BOUND_VERSIONS).expect("meta"),
+        Some(TEST_CODEC_V2.bound_versions.to_string())
+    );
     drop(connection);
+
+    // This build implements only v1, so the migrated store fails closed on open.
+    let result = fixture.open();
+    assert!(
+        matches!(result, Err(StoreError::UnsupportedCodec { .. })),
+        "a store in a codec this build does not implement must fail closed, got {result:?}"
+    );
+
+    // Migrating back is the same primitive with the codecs swapped, and it
+    // must reproduce the committed v1 bytes exactly: the corpus survives a
+    // round trip through another codec byte for byte.
+    {
+        let mut connection =
+            open_hardened(&paths.database(), &key_owned, OpenIntent::Existing).expect("reopen");
+        let transaction = connection.transaction().expect("reverse transaction");
+        migrate_codec::<TestCodecV2, CitadelOpenMlsJsonCodecV1>(
+            &transaction,
+            TEST_CODEC_V2,
+            CODEC_V1,
+        )
+        .expect("migrate test v2 -> v1");
+        transaction.commit().expect("commit reverse migration");
+        assert_eq!(
+            provider_blobs(&connection),
+            before,
+            "a round trip through v2 must restore the v1 bytes byte for byte"
+        );
+    }
+    fixture
+        .open()
+        .expect("the store opens under v1 again")
+        .close()
+        .expect("close");
 
     // An unknown codec identifier fails closed. There is no trial decoding.
     {
@@ -1148,6 +1373,167 @@ fn store_codec_v1_roundtrips_golden_corpus_and_migrates() {
         matches!(result, Err(StoreError::UnsupportedCodec { .. })),
         "a changed bound-version tuple must fail closed, got {result:?}"
     );
+}
+
+#[test]
+fn store_codec_migration_failure_rolls_back_rows_and_identifier() {
+    let fixture = Fixture::new();
+    let store = fixture.open().expect("open");
+    let paths = store.paths().clone();
+    let key = store.database_encryption_key_for_evidence().expect("key");
+    store.close().expect("close");
+
+    let key_owned = super::key::DatabaseEncryptionKey::from_bytes(key);
+    let mut connection =
+        open_hardened(&paths.database(), &key_owned, OpenIntent::Existing).expect("reopen");
+    write_corpus(&mut connection);
+    let before = provider_blobs(&connection);
+    assert!(
+        before.len() > 4,
+        "the corpus must have rows to half-migrate"
+    );
+
+    // Fail on a value in the middle, so real rows were already rewritten inside
+    // the transaction when the encoder refuses. A failure on the first value
+    // would prove nothing about rollback.
+    let fail_at = before.len() / 2;
+    FAILING_CODEC_ENCODED.with(|counter| counter.set(0));
+    FAILING_CODEC_FAIL_AT.with(|cell| cell.set(Some(fail_at)));
+    let error = {
+        let transaction = connection.transaction().expect("migration transaction");
+        let result = migrate_codec::<CitadelOpenMlsJsonCodecV1, FailingTestCodecV2>(
+            &transaction,
+            CODEC_V1,
+            TEST_CODEC_V2,
+        );
+        let error = result.expect_err("an encoder failure must abort the migration");
+        transaction.rollback().expect("rollback");
+        error
+    };
+    FAILING_CODEC_FAIL_AT.with(|cell| cell.set(None));
+    assert!(
+        matches!(error, StoreError::CodecMigration(_)),
+        "expected a codec migration error, got {error:?}"
+    );
+    assert_eq!(
+        FAILING_CODEC_ENCODED.with(|counter| counter.get()),
+        fail_at + 1,
+        "the failure was injected after {fail_at} real rewrites, not before the first"
+    );
+
+    // Nothing moved: not one value, and not the identity.
+    assert_eq!(
+        provider_blobs(&connection),
+        before,
+        "no row may keep a partial rewrite after rollback"
+    );
+    assert_eq!(
+        read_metadata(&connection, meta_key::CODEC_ID).expect("meta"),
+        Some(CODEC_ID.to_string()),
+        "the identifier must still name v1"
+    );
+    assert_eq!(
+        read_metadata(&connection, meta_key::CODEC_BOUND_VERSIONS).expect("meta"),
+        Some(CODEC_BOUND_VERSIONS.to_string())
+    );
+    drop(connection);
+    fixture
+        .open()
+        .expect("the store opens under v1 as if the migration had never been attempted")
+        .close()
+        .expect("close");
+}
+
+#[test]
+fn store_codec_migration_fails_closed_on_provider_schema_drift() {
+    let fixture = Fixture::new();
+    let store = fixture.open().expect("open");
+    let paths = store.paths().clone();
+    let key = store.database_encryption_key_for_evidence().expect("key");
+    store.close().expect("close");
+
+    let key_owned = super::key::DatabaseEncryptionKey::from_bytes(key);
+    let mut connection =
+        open_hardened(&paths.database(), &key_owned, OpenIntent::Existing).expect("reopen");
+    write_corpus(&mut connection);
+    let before = provider_blobs(&connection);
+
+    // An upstream provider release that adds a table would leave that table's
+    // values in the old codec behind a metadata row claiming the new one.
+    {
+        let transaction = connection.transaction().expect("transaction");
+        transaction
+            .execute_batch(
+                "CREATE TABLE openmls_future_entities (
+                     provider_version INTEGER NOT NULL,
+                     id BLOB PRIMARY KEY,
+                     entity BLOB NOT NULL
+                 )",
+            )
+            .expect("simulate an unpinned provider table");
+        let error = migrate_codec::<CitadelOpenMlsJsonCodecV1, TestCodecV2>(
+            &transaction,
+            CODEC_V1,
+            TEST_CODEC_V2,
+        )
+        .expect_err("an unpinned provider table must fail closed");
+        assert!(
+            matches!(&error, StoreError::CodecMigration(detail) if detail.contains("openmls_future_entities")),
+            "{error:?}"
+        );
+        assert_eq!(
+            provider_blobs(&transaction),
+            before,
+            "the schema check must run before the first rewrite"
+        );
+        transaction.rollback().expect("rollback");
+    }
+
+    // So would a new blob column on a table this pin already knows.
+    {
+        let transaction = connection.transaction().expect("transaction");
+        transaction
+            .execute_batch("ALTER TABLE openmls_psks ADD COLUMN future_blob BLOB")
+            .expect("simulate an unpinned blob column");
+        let error = migrate_codec::<CitadelOpenMlsJsonCodecV1, TestCodecV2>(
+            &transaction,
+            CODEC_V1,
+            TEST_CODEC_V2,
+        )
+        .expect_err("an unpinned blob column must fail closed");
+        assert!(
+            matches!(&error, StoreError::CodecMigration(detail) if detail.contains("openmls_psks")),
+            "{error:?}"
+        );
+        assert_eq!(provider_blobs(&transaction), before);
+        transaction.rollback().expect("rollback");
+    }
+
+    // And a caller who is wrong about which codec the store is in is refused
+    // before any row is read.
+    {
+        let transaction = connection.transaction().expect("transaction");
+        let error = migrate_codec::<TestCodecV2, CitadelOpenMlsJsonCodecV1>(
+            &transaction,
+            TEST_CODEC_V2,
+            CODEC_V1,
+        )
+        .expect_err("a store that is not in the source codec must be refused");
+        assert!(
+            matches!(error, StoreError::UnsupportedCodec { .. }),
+            "{error:?}"
+        );
+        assert_eq!(provider_blobs(&transaction), before);
+        transaction.rollback().expect("rollback");
+    }
+
+    assert_eq!(provider_blobs(&connection), before);
+    drop(connection);
+    fixture
+        .open()
+        .expect("the store is untouched")
+        .close()
+        .expect("close");
 }
 
 #[test]
@@ -1340,12 +1726,9 @@ fn store_whole_file_rollback_boundary_is_explicit() {
     let paths = store.paths().clone();
     let key = store.database_encryption_key_for_evidence().expect("key");
     store.close().expect("close before snapshot");
-    let snapshot = CapturedSnapshot::capture_files(
-        &paths,
-        key,
-        &fixture.dir.path().join("older-complete-snapshot"),
-    )
-    .expect("capture old complete file set");
+    let snapshot =
+        CapturedSnapshot::capture_files(&paths, key, &fixture.root.join("older-complete-snapshot"))
+            .expect("capture old complete file set");
     assert!(
         snapshot
             .copied_files()
@@ -1682,7 +2065,13 @@ fn store_receive_is_atomic_with_plaintext_and_mls_state() {
 #[test]
 fn post_restart_snapshot_proves_mls_forward_secrecy() {
     let fixture = Fixture::new();
-    let snapshots = tempfile::tempdir().expect("snapshot dir");
+    let snapshot_dir = tempfile::tempdir().expect("snapshot dir");
+    // Canonical for the same reason as `Fixture::root`: snapshots are reopened
+    // with `SQLITE_OPEN_NOFOLLOW`.
+    let snapshots = snapshot_dir
+        .path()
+        .canonicalize()
+        .expect("canonical snapshot dir");
     let store = fixture.open().expect("open");
     let identity = local_identity();
     let mut peer = pair(&store, identity.clone());
@@ -1726,7 +2115,7 @@ fn post_restart_snapshot_proves_mls_forward_secrecy() {
             .read(SecretItem::DatabaseEncryptionKey)
             .expect("read")
             .expect("present");
-        CapturedSnapshot::capture_files(&fixture.paths(), key, &snapshots.path().join("before"))
+        CapturedSnapshot::capture_files(&fixture.paths(), key, &snapshots.join("before"))
             .expect("capture")
     };
     assert!(
@@ -1806,7 +2195,7 @@ fn post_restart_snapshot_proves_mls_forward_secrecy() {
             .read(SecretItem::DatabaseEncryptionKey)
             .expect("read")
             .expect("present");
-        CapturedSnapshot::capture_files(&fixture.paths(), key, &snapshots.path().join("after"))
+        CapturedSnapshot::capture_files(&fixture.paths(), key, &snapshots.join("after"))
             .expect("capture")
     };
     assert!(!after.has_live_rollback_journal());

@@ -47,6 +47,7 @@
 
 pub mod actor;
 pub mod codec;
+pub mod codec_migration;
 pub mod credentials;
 pub mod error;
 pub mod key;
@@ -68,6 +69,10 @@ pub use actor::{
     ConversationRow, KtCheckpoint, LocalStore, MessageRow, OperationOutcome, PendingTransmission,
 };
 pub use codec::{CitadelOpenMlsJsonCodecV1, CODEC_BOUND_VERSIONS, CODEC_ID};
+pub use codec_migration::{
+    migrate_codec, verify_provider_schema, CodecIdentity, CodecMigrationReport, CODEC_V1,
+    PROVIDER_CODEC_COLUMNS, PROVIDER_HISTORY_TABLE,
+};
 pub use credentials::{CredentialStore, CredentialStoreError, NativeCredentialStore, SecretItem};
 pub use error::StoreError;
 pub use key::DatabaseEncryptionKey;

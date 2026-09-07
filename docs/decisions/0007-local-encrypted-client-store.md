@@ -1436,7 +1436,7 @@ three-platform requirement, treat a local run as CI, or mark the criterion
 complete. The production release-conformance jobs remain open on all three
 targets.
 
-### H. The v1 corpus lands now; test v2 codec migration has a release-forcing gate
+### H. The v1 corpus and the test v2 codec migration both land
 
 The committed `citadel-openmls-json-v1` corpus and its manifest enumerate the
 storage entities written by the evidence operation matrix and pin their exact
@@ -1445,10 +1445,40 @@ manifest against the independently observed provider rows, rejects missing or
 unlisted blobs, decodes every committed value, and byte-compares the current v1
 encoding with the committed representation.
 
-With charge's sign-off on 2026-08-14, the single-transaction test v2 codec
-migration is deferred. It remains required **before any release that ships a
-codec version bump**. The committed v1 corpus is compatibility evidence, not a
-substitute for that migration test.
+On 2026-08-14 charge signed off on deferring the single-transaction test v2
+codec migration behind a release-forcing gate. **That deferral is withdrawn on
+2026-09-06**: the migration half is implemented in the same pull request, so
+§H no longer narrows the Evidence entry and the gate has nothing left to
+force. What landed, and what it changed about §1's wording:
+
+- `store::codec_migration::migrate_codec` is the §1 primitive: it refuses a
+  store that does not claim the source codec, verifies the live provider
+  schema against a pinned table-and-column set, rewrites every codec-encoded
+  value of every row through `serde_json::Value`, and updates the identifier
+  and bound-version tuple last, all on a caller-owned transaction.
+- §1's "decode every old provider row" is now precise: `openmls_sqlite_storage`
+  0.2.0 passes **keys** through the codec as well as entities, so every `BLOB`
+  column is rewritten, primary keys included. The pin
+  (`PROVIDER_CODEC_COLUMNS`) is exactly the provider's blob columns, and a
+  provider release that adds a table or a blob column fails the migration
+  closed before the first row is touched.
+- `store_codec_v1_roundtrips_golden_corpus_and_migrates` now migrates the
+  corpus to a test v2 codec in one transaction, asserts one rewritten row per
+  manifest entity and more rewritten values than rows, proves every value
+  decodes under v2 and fails under v1 with unchanged meaning, proves the
+  migrated store fails closed on open under a v1-only build, and migrates
+  back, requiring the committed v1 bytes byte for byte.
+- `store_codec_migration_failure_rolls_back_rows_and_identifier` injects an
+  encoder failure after real rows were rewritten inside the transaction and
+  proves no value and neither metadata row moved.
+- `store_codec_migration_fails_closed_on_provider_schema_drift` proves an
+  unpinned table, an unpinned blob column, and a wrong source identity are
+  each refused before any rewrite.
+
+The migration crosses codecs as `serde_json::Value`, so it serves any pair of
+self-describing codecs. A future codec that is not self-describing needs a
+typed per-entity migration and its own ADR; that limit is stated in the
+module rather than discovered at bump time.
 
 ## Primary sources
 
