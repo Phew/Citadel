@@ -5,13 +5,24 @@
 //! group is accepted. Application plaintext is padded before encrypt and
 //! unpadded after decrypt (ADR-0005 §3); the delivery service only ever handles
 //! the resulting ciphertext (INV-1).
+//!
+//! Every method is generic over the OpenMLS provider so the same code runs
+//! against [`crate::crypto::EphemeralProvider`] and against
+//! [`crate::store::StoreProvider`] inside a store transaction. That genericity
+//! is not for convenience: it is what lets the persisted path reuse this state
+//! machine rather than acquiring a second copy of the KT-verification and
+//! padding rules that could drift from it.
 
-use crate::credential::{verify_member_credential, CredentialError, IdentityVerifier};
-use crate::crypto::{create_config, join_config, Provider};
+use crate::credential::{
+    parse_member_credential, verify_member_credential, CredentialError, IdentityVerifier,
+};
+use crate::crypto::{create_config, join_config, retained_past_epochs, MAX_PAST_EPOCHS};
 use crate::identity::DeviceIdentity;
 use crate::padding::{pad, unpad, PadError};
+use citadel_proto::credential::DeviceCredential;
 use citadel_proto::ids::GroupId as ProtoGroupId;
 use openmls::prelude::*;
+use openmls_traits::OpenMlsProvider;
 
 /// Errors from group operations.
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +43,21 @@ pub enum GroupError {
     PreparedCommitMismatch,
     #[error("incoming commit conflicts with a pending self-update")]
     PendingCommitConflictDeferred,
+    /// Refused before deserialization: the bytes exceed
+    /// `citadel_proto::MAX_WIRE_BYTES`, so a hostile delivery service cannot
+    /// choose how much a client allocates.
+    #[error("wire message of {0} bytes exceeds the {max} byte bound", max = citadel_proto::MAX_WIRE_BYTES)]
+    WireTooLarge(usize),
+    /// ADR-0007 §6: a persisted group whose configuration retains past epochs is
+    /// refused rather than loaded, so an OpenMLS default change cannot silently
+    /// widen the window in which old-epoch ciphertext stays decryptable.
+    #[error("persisted group configuration retains {0} past epoch(s); ADR-0007 §6 pins zero")]
+    PastEpochRetentionRejected(usize),
+    /// The persisted join configuration has no readable `max_past_epochs`,
+    /// which an openmls upgrade that renamed or removed the field would cause.
+    /// Fail closed: an unreadable pin is not a satisfied pin.
+    #[error("the persisted group configuration's past-epoch retention is unreadable")]
+    PastEpochRetentionUnreadable,
 }
 
 /// A joined DM group. Wraps the OpenMLS group; all mutation goes through here so
@@ -45,8 +71,8 @@ impl DmGroup {
     /// Create a new DM group with `identity` as the sole initial member. The
     /// `group_id` is the server-facing [`ProtoGroupId`] so wire addressing and
     /// MLS agree on one identifier.
-    pub fn create(
-        provider: &Provider,
+    pub fn create<P: OpenMlsProvider>(
+        provider: &P,
         identity: &DeviceIdentity,
         group_id: ProtoGroupId,
     ) -> Result<Self, GroupError> {
@@ -65,13 +91,44 @@ impl DmGroup {
         })
     }
 
+    /// Load a persisted group, or `Ok(None)` if this store holds no such group.
+    ///
+    /// `pending_self_update` is supplied by the caller from the durable pending
+    /// transmission row rather than remembered in memory: ADR-0007 §5 makes the
+    /// encrypted database the source of truth, so after a restart a confirm or
+    /// abort would otherwise have nothing to match against.
+    pub fn load<P: OpenMlsProvider>(
+        provider: &P,
+        group_id: &ProtoGroupId,
+        pending_self_update: Option<Vec<u8>>,
+    ) -> Result<Option<Self>, GroupError> {
+        let gid = GroupId::from_slice(group_id.as_uuid().as_bytes());
+        let loaded = MlsGroup::load(provider.storage(), &gid)
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        let Some(mls) = loaded else {
+            return Ok(None);
+        };
+        // Fail closed on epoch retention BEFORE the group is usable. Checking
+        // after the first operation would let a message be sent under a
+        // configuration this design does not accept.
+        let retained = retained_past_epochs(mls.configuration())
+            .ok_or(GroupError::PastEpochRetentionUnreadable)?;
+        if retained != MAX_PAST_EPOCHS {
+            return Err(GroupError::PastEpochRetentionRejected(retained));
+        }
+        Ok(Some(Self {
+            mls,
+            pending_self_update,
+        }))
+    }
+
     /// Add members from their fetched KeyPackages in one commit (F2 step 2).
     /// Returns the serialized commit and Welcome for submission via the delivery
     /// service. The commit is merged locally immediately (the initiator is
     /// authoritative for its own send).
-    pub fn add_members(
+    pub fn add_members<P: OpenMlsProvider>(
         &mut self,
-        provider: &Provider,
+        provider: &P,
         identity: &DeviceIdentity,
         key_packages: &[KeyPackage],
         verifier: &impl IdentityVerifier,
@@ -109,11 +166,48 @@ impl DmGroup {
     /// verified against the KT log (INV-4) before the group is accepted**; any
     /// failure aborts the join and no group state is created. `welcome_bytes` is
     /// the serialized `MlsMessageOut` of kind Welcome delivered by the DS.
-    pub fn join_from_welcome(
-        provider: &Provider,
+    /// Who a Welcome would make us a member alongside, WITHOUT joining: each
+    /// member's credential, parsed and signature-checked but not KT-attested.
+    /// A client attests those accounts (a network round trip per unknown
+    /// account) and only then calls [`Self::join_from_welcome`], which
+    /// re-verifies every one of them against the attested set (INV-4).
+    /// Staging reads the init key from storage; run this inside a transaction
+    /// you roll back so nothing about the KeyPackage is consumed.
+    pub fn welcome_members<P: OpenMlsProvider>(
+        provider: &P,
+        welcome_bytes: &[u8],
+    ) -> Result<Vec<DeviceCredential>, GroupError> {
+        if welcome_bytes.len() > citadel_proto::MAX_WIRE_BYTES {
+            return Err(GroupError::WireTooLarge(welcome_bytes.len()));
+        }
+        let msg = MlsMessageIn::tls_deserialize_exact_bytes(welcome_bytes)
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        let welcome = match msg.extract() {
+            MlsMessageBodyIn::Welcome(w) => w,
+            _ => return Err(GroupError::Mls("message was not a Welcome".into())),
+        };
+        let staged = StagedWelcome::new_from_welcome(provider, &join_config(), welcome, None)
+            .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
+        staged
+            .members()
+            .map(|member| {
+                parse_member_credential(
+                    member.credential.serialized_content(),
+                    &member.signature_key,
+                )
+                .map_err(GroupError::MemberRejected)
+            })
+            .collect()
+    }
+
+    pub fn join_from_welcome<P: OpenMlsProvider>(
+        provider: &P,
         welcome_bytes: &[u8],
         verifier: &impl IdentityVerifier,
     ) -> Result<Self, GroupError> {
+        if welcome_bytes.len() > citadel_proto::MAX_WIRE_BYTES {
+            return Err(GroupError::WireTooLarge(welcome_bytes.len()));
+        }
         let msg = MlsMessageIn::tls_deserialize_exact_bytes(welcome_bytes)
             .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
         let welcome = match msg.extract() {
@@ -147,9 +241,9 @@ impl DmGroup {
     /// Encrypt an application message (F4 send). The plaintext is padded to a
     /// bucket before encryption (ADR-0005 §3). Returns the serialized
     /// `MlsMessageOut` for submission as an `Application` envelope.
-    pub fn send(
+    pub fn send<P: OpenMlsProvider>(
         &mut self,
-        provider: &Provider,
+        provider: &P,
         identity: &DeviceIdentity,
         plaintext: &[u8],
     ) -> Result<Vec<u8>, GroupError> {
@@ -165,9 +259,9 @@ impl DmGroup {
     /// Prepare a self-update commit for transport without advancing the local
     /// epoch. The caller confirms it only after transport acceptance, or aborts
     /// it after rejection. Delivery ordering and rebase remain M3.
-    pub fn prepare_self_update(
+    pub fn prepare_self_update<P: OpenMlsProvider>(
         &mut self,
-        provider: &Provider,
+        provider: &P,
         identity: &DeviceIdentity,
     ) -> Result<PreparedCommit, GroupError> {
         let bundle = self
@@ -197,9 +291,9 @@ impl DmGroup {
     }
 
     /// Merge the pending local commit after transport accepts it.
-    pub fn confirm_self_update(
+    pub fn confirm_self_update<P: OpenMlsProvider>(
         &mut self,
-        provider: &Provider,
+        provider: &P,
         prepared: &PreparedCommit,
     ) -> Result<(), GroupError> {
         self.validate_prepared_commit(prepared)?;
@@ -211,9 +305,9 @@ impl DmGroup {
     }
 
     /// Discard the pending local commit after transport rejects it.
-    pub fn abort_self_update(
+    pub fn abort_self_update<P: OpenMlsProvider>(
         &mut self,
-        provider: &Provider,
+        provider: &P,
         prepared: &PreparedCommit,
     ) -> Result<(), GroupError> {
         self.validate_prepared_commit(prepared)?;
@@ -228,12 +322,15 @@ impl DmGroup {
     /// plaintext. Proposal-free staged commits are KT-verified and merged so
     /// peer self-updates advance the epoch. Commit ordering, conflict handling,
     /// and proposal-bearing commits remain M3.
-    pub fn receive(
+    pub fn receive<P: OpenMlsProvider>(
         &mut self,
-        provider: &Provider,
+        provider: &P,
         message_bytes: &[u8],
         verifier: &impl IdentityVerifier,
     ) -> Result<ReceiveOutcome, GroupError> {
+        if message_bytes.len() > citadel_proto::MAX_WIRE_BYTES {
+            return Err(GroupError::WireTooLarge(message_bytes.len()));
+        }
         let msg = MlsMessageIn::tls_deserialize_exact_bytes(message_bytes)
             .map_err(|e| GroupError::Mls(format!("{e:?}")))?;
         let protocol = msg
@@ -282,6 +379,20 @@ impl DmGroup {
         self.mls.members().count()
     }
 
+    /// How many past epochs this group's configuration retains. Always zero for
+    /// a group this crate created or loaded; exposed so the forward-secrecy
+    /// evidence can assert it rather than assume it.
+    pub fn max_past_epochs(&self) -> Option<usize> {
+        retained_past_epochs(self.mls.configuration())
+    }
+
+    /// The underlying OpenMLS group, for evidence builds that must drive
+    /// `process_message` directly to observe an exact typed error chain.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn mls_group_mut(&mut self) -> &mut MlsGroup {
+        &mut self.mls
+    }
+
     fn validate_prepared_commit(&self, prepared: &PreparedCommit) -> Result<(), GroupError> {
         if self.mls.pending_commit().is_none() {
             return Err(GroupError::NoPendingCommit);
@@ -291,6 +402,22 @@ impl DmGroup {
             Some(_) => Err(GroupError::PreparedCommitMismatch),
             None => Err(GroupError::NoPendingCommit),
         }
+    }
+}
+
+impl std::fmt::Debug for DmGroup {
+    /// Deliberately renders no group state. `MlsGroup` holds message secrets and
+    /// epoch key pairs, and a `{:?}` in a log or a panic message must not be a
+    /// route out for any of it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DmGroup")
+            .field("epoch", &self.epoch())
+            .field("members", &self.member_count())
+            .field(
+                "has_pending_self_update",
+                &self.pending_self_update.is_some(),
+            )
+            .finish()
     }
 }
 
@@ -311,6 +438,16 @@ pub struct PreparedCommit {
 }
 
 impl PreparedCommit {
+    /// Rebuild from persisted bytes after a restart, so a confirm or abort
+    /// issued by a later process can still be matched against the pending commit
+    /// the database recorded.
+    pub fn from_persisted(commit_bytes: Vec<u8>, proposed_epoch: u64) -> Self {
+        Self {
+            commit_bytes,
+            proposed_epoch,
+        }
+    }
+
     /// Serialized commit for delivery as an `EnvelopeKind::Commit`.
     pub fn commit_bytes(&self) -> &[u8] {
         &self.commit_bytes

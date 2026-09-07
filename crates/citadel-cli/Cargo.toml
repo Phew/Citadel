@@ -1,0 +1,19 @@
+[package]
+name = "citadel-cli"
+description = "A terminal client over citadel-app: register, verify peers, open DMs, send, and listen. The first host of the app core; the native UIs follow the same calls."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "citadel"
+path = "src/main.rs"
+
+[dependencies]
+citadel-app = { workspace = true }
+citadel-core = { workspace = true }
+citadel-proto = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

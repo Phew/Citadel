@@ -18,7 +18,7 @@ roster table is the only place one belongs.
 
 ADR-0007 (local encrypted client store) was designed, independently reviewed by K3, amended
 once, and ACCEPTED by charge on 2026-07-26 (`d302e76`). The store was then built against the
-accepted design, with the build-time divergences now proposed as Amendment 2, and is **PR #69**
+accepted design, with the build-time divergences recorded in Amendment 2, and is **PR #69**
 on branch `core/local-encrypted-store`. It is out of draft. K3's blocking review in PR #74
 returned **CHANGES** with three required items; the complete shutdown queue is at the end of
 this file. Four defects found in the ADR during the build are filed as
@@ -26,8 +26,44 @@ this file. Four defects found in the ADR during the build are filed as
 FS test belongs to K3. The accepted differential PCS oracle is also still unbuilt; issue 014
 corrects the prior milestone count. **M2 is three of five, not four of five.**
 
-charge subsequently assigned Amendment 2 explicitly. The proposed text is now in ADR-0007;
-it has no force until charge accepts it after K3's blocking review.
+charge accepted Amendment 2 on 2026-08-14 after K3 completed its blocking review. The
+acceptance is committed on PR #69 but has no force on `main` unless and until that PR merges.
+
+## 2026-08-14 R1-R3 implementation update
+
+- Charge accepted ADR-0007 Amendment 2. This branch records the acceptance; it is not live on
+  `main` before PR #69 merges.
+- R1 covers both superseded comments. The `receive` comment now states the complete-wire
+  fingerprint and single actor-side parse rationale from §D. The `new_key_package` comment now
+  states the §B.1 lifecycle gate across generation, publication, and fetch.
+- R2 is implemented. `store_whole_file_rollback_boundary_is_explicit` replaces the complete
+  encrypted SQLite file set with an older valid snapshot, reopens it through `LocalStore`,
+  passes SQLCipher integrity verification, and reads the older KT checkpoint. This pins the
+  limitation that authenticated pages do not establish snapshot freshness.
+- R3 is implemented in full. The committed v1 corpus's manifest enumerates the exact storage
+  entities written by the evidence operation matrix, the test rejects missing and unlisted
+  blobs, and every current v1 encoding is byte-compared with the committed bytes. The
+  single-transaction test v2 codec migration landed on 2026-09-06 (`store::codec_migration`,
+  the migration half of `store_codec_v1_roundtrips_golden_corpus_and_migrates`,
+  `store_codec_migration_failure_rolls_back_rows_and_identifier`, and
+  `store_codec_migration_fails_closed_on_provider_schema_drift`); the 2026-08-14 deferral is
+  withdrawn in ADR-0007 §H, and charge's merge is its acceptance.
+- macOS, run for the first time on 2026-09-06: every store test failed at the first open with
+  `SQLITE_CANTOPEN_SYMLINK`, because the default temporary directory is under `/var` (a symlink
+  to `/private/var`) and SQLite enforces `SQLITE_OPEN_NOFOLLOW` against every path component.
+  The store is right to refuse; the test fixtures now canonicalize their roots. 70 of 70 lib
+  tests pass on macOS after the fix. Windows remains unrun by anyone but the original builder.
+- PR #69 remains blocked pending K3's re-review of R1 through R3. Core must not merge it or
+  describe it as ready before that review.
+- M2 remains **three of five**. `pcs_recover_after_update` has only success assertions: no
+  pre-update snapshot, attacker state, or required decryption failure. Persisted-state FS and
+  the captured-state differential PCS criterion remain open.
+- Core accepts ownership of the missing `LocalStore`-backed drivable client. Both remaining M2
+  criteria depend on it; K3 owns harness wiring after that client exists.
+- Native release conformance remains **zero of three platforms**.
+  `store_release_uses_only_the_target_native_credential_backend` is named only in documentation
+  and does not exist as a test function. Linux debug CI proves live Secret Service execution,
+  not the ADR's three-platform release-CI contract.
 
 ---
 
@@ -105,6 +141,7 @@ checkpoint call, no vacuum, and no test-only cleanup, deliberately.
 - `store_receive_is_atomic_with_plaintext_and_mls_state`
 - `store_restart_restores_group_and_pending_transmission_exactly_once`
 - `store_restart_preserves_kt_anti_rollback_checkpoint`
+- `store_whole_file_rollback_boundary_is_explicit`
 - `store_migrations_are_encrypted_transactional_and_monotonic`
 - `store_clean_open_does_not_run_a_full_integrity_scan`
 - `store_profile_destruction_revokes_keys_and_reports_residual_files`
@@ -161,16 +198,27 @@ substitute for either the page-reconstruction test or K3's harness AC.
 
 ## Which platforms have NO CI job — read this before trusting a green check
 
-**Every job in `.github/workflows/ci.yml` is `runs-on: ubuntu-latest`.** There is no Windows
-runner and no macOS runner anywhere in this repository.
+**Update 2026-09-06.** `store-macos` (`macos-latest`) and `store-windows` (`windows-latest`)
+now exist in `ci.yml`: each runs clippy `-D warnings` and the crate's lib tests on its target,
+then the `#[ignore]`d native-backend tests with `--include-ignored` (macOS provisions a
+throwaway unlocked default keychain first). `apple.rs` gained the same conformance tests
+`secret_service.rs` has, plus a foreign-size `Malformed` case, and passed them on a developer
+Mac before the job existed. The table below and the paragraph after it are the state **before**
+that date, kept because the trap they describe is what the new jobs exist to spring in CI
+rather than on a user. Debug-profile coverage is now three of three targets; release-profile
+conformance (`store_release_uses_only_the_target_native_credential_backend`) is still zero of
+three and belongs to PR #80.
+
+**Before 2026-09-06:** every job in `.github/workflows/ci.yml` was `runs-on: ubuntu-latest`.
+There was no Windows runner and no macOS runner anywhere in this repository.
 
 | Target | Compiled in CI? | Native backend exercised? |
 |---|---|---|
-| Linux | yes (`rust`, and `store-evidence` for the real Secret Service via `dbus-run-session` + gnome-keyring) | yes, Linux only |
-| Windows | **no** | **no** |
-| macOS | **no** | **no** |
+| Linux | yes (`rust`, and `store-evidence` for the real Secret Service via `dbus-run-session` + gnome-keyring) | yes |
+| Windows | **no** until 2026-09-06 (`store-windows`) | **no** until 2026-09-06 |
+| macOS | **no** until 2026-09-06 (`store-macos`) | **no** until 2026-09-06 |
 
-What that means concretely, and it is more than "some tests don't run":
+What that meant concretely, and it is more than "some tests don't run":
 
 - **`store/credentials/windows.rs` is compiled by no CI job.** It is the adapter that calls
   `CredReadW`/`CredWriteW`/`CredDeleteW` directly. Nothing in CI type-checks it.
@@ -491,10 +539,10 @@ but it does not satisfy PLAN §9's harness criterion.
 
 ---
 
-## Shutdown snapshot 2026-07-28
+## Historical shutdown snapshot 2026-07-28
 
-This section supersedes earlier queue and branch-state paragraphs where they
-conflict. It is written for a reader with no session memory.
+This historical section is superseded by the 2026-08-14 R1-R3 implementation update where
+the two conflict. It is retained to preserve the review trail.
 
 ### Current evidence and milestone state
 
@@ -531,9 +579,9 @@ conflict. It is written for a reader with no session memory.
   `pcs_recover_after_update` ran, but its success-only assertions are not the
   differential PCS criterion.
 - `store_whole_file_rollback_boundary_is_explicit` does not exist.
-- `store_codec_v1_roundtrips_golden_corpus_and_migrates` ran, but the named
-  committed corpus and transactional test-v2 migration do not exist. The test
-  proves only current-build determinism and round-trip behavior.
+- `store_codec_v1_roundtrips_golden_corpus_and_migrates` ran; at that time the
+  committed corpus and transactional test v2 codec migration did not exist. Both
+  exist now (see the start of this file).
 - `store_release_excludes_secret_evidence_paths`, the three-platform release
   graph checks, and the all-desktop-target hot-path benchmark do not exist.
 - The freed-page reconstruction half of
@@ -631,7 +679,7 @@ as acceptance.
 |---|---|---|
 | R1: correct both superseded `actor.rs` premises | Core | Before PR #69 K3 re-review and merge, after charge's Amendment 2 ruling |
 | R2: implement `store_whole_file_rollback_boundary_is_explicit`, or record a charge-approved narrowing | Core implementation; charge decides any narrowing | Before PR #69 merge |
-| R3: commit the schema-complete v1 corpus and implement the transactional test-v2 migration, or record a charge-approved narrowing | Core implementation; charge decides any narrowing | Before PR #69 merge |
+| R3: commit the schema-complete v1 corpus and implement the transactional test v2 codec migration | Core — **done 2026-09-06**, no narrowing needed | Before PR #69 merge |
 | Amendment 2 acceptance | charge | Before R1 is finalized and before PR #69 merge |
 | ADR-0005 Amendment 2 acceptance from `k3/answers-013-014` | charge | Before the follow-up branch merges or Subscribe acknowledgment is treated as accepted text |
 | Re-review R1-R3 | K3 | After Core pushes the complete fixes, before PR #69 merge |

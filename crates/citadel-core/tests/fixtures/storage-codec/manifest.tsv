@@ -1,0 +1,15 @@
+format_version	1
+codec_id	citadel-openmls-json-v1
+bound_versions	openmls=0.8.1;openmls_traits=0.5.0;openmls_sqlite_storage=0.2.0;provider_schema=1
+entity	epoch_key_pairs	v1/epoch-key-pairs.json	293
+entity	group_data.confirmation_tag	v1/group-data-confirmation_tag.json	132
+entity	group_data.context	v1/group-data-context.json	381
+entity	group_data.group_epoch_secrets	v1/group-data-group_epoch_secrets.json	817
+entity	group_data.group_state	v1/group-data-group_state.json	13
+entity	group_data.interim_transcript_hash	v1/group-data-interim_transcript_hash.json	116
+entity	group_data.join_group_config	v1/group-data-join_group_config.json	277
+entity	group_data.message_secrets	v1/group-data-message_secrets.json	1269
+entity	group_data.own_leaf_index	v1/group-data-own_leaf_index.json	1
+entity	group_data.resumption_psk_store	v1/group-data-resumption_psk_store.json	208
+entity	group_data.tree	v1/group-data-tree.json	2318
+entity	key_package	v1/key-package.json	2942

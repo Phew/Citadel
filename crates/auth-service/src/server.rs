@@ -18,7 +18,7 @@ use citadel_proto::auth::{
 };
 use citadel_proto::error::{ErrorCode, ErrorResponse};
 use citadel_proto::ids::{AccountId, DeviceId};
-use citadel_proto::kt::KtProofResponse;
+use citadel_proto::kt::{KtLeafInfo, KtProofResponse};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -56,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/kt/tree-head", get(kt_tree_head))
         .route("/v1/kt/proof", get(kt_proof))
         .route("/v1/kt/consistency", get(kt_consistency))
+        .route("/v1/kt/leaf", get(kt_leaf))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -341,6 +342,47 @@ async fn kt_consistency(
         )
     })?;
     Ok(Json(proof))
+}
+
+#[derive(Deserialize)]
+struct LeafQuery {
+    account: Option<AccountId>,
+    handle: Option<String>,
+}
+
+/// `GET /v1/kt/leaf?account=<id>` or `?handle=<h>` — where an account's leaf
+/// sits in the log, so a client can verify a peer it did not register itself.
+/// A hint, never trusted (INV-4): the client rebuilds the leaf and verifies an
+/// inclusion proof against a tree head it verified. Handles are not unique;
+/// a handle lookup resolves to the earliest registration.
+async fn kt_leaf(
+    State(state): State<AppState>,
+    Query(q): Query<LeafQuery>,
+) -> Result<Json<KtLeafInfo>, ApiError> {
+    let account_id = match (q.account, q.handle) {
+        (Some(account), _) => account,
+        (None, Some(handle)) => kt_store::account_by_handle(&state.pool, &handle)
+            .await
+            .map_err(kt_error)?
+            .ok_or_else(|| error_response(ErrorCode::NotFound, "no account with that handle"))?,
+        (None, None) => {
+            return Err(error_response(
+                ErrorCode::InvalidRequest,
+                "one of account or handle is required",
+            ))
+        }
+    };
+    let (leaf_index, leaf) = kt_store::leaf_for_account(&state.pool, account_id)
+        .await
+        .map_err(kt_error)?
+        .ok_or_else(|| error_response(ErrorCode::NotFound, "no KT leaf for that account"))?;
+    Ok(Json(KtLeafInfo {
+        account_id: leaf.account_id,
+        handle: leaf.handle,
+        identity_pubkey: leaf.identity_pubkey,
+        leaf_index,
+        appended_at: leaf.appended_at,
+    }))
 }
 
 async fn health() -> impl IntoResponse {

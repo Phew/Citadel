@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/citadel-proto",
     "crates/citadel-core",
+    "crates/citadel-app",
+    "crates/citadel-cli",
+    "crates/citadel-ffi",
     "crates/citadel-migrations",
     "crates/auth-service",
     "crates/delivery-service",
@@ -24,6 +27,7 @@ rust-version = "1.95.0"
 # Internal
 citadel-proto = { path = "crates/citadel-proto" }
 citadel-core = { path = "crates/citadel-core" }
+citadel-app = { path = "crates/citadel-app" }
 kt-log = { path = "crates/kt-log" }
 citadel-service-crypto = { path = "crates/citadel-service-crypto" }
 

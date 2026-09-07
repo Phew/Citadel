@@ -24,6 +24,23 @@ pub trait IdentityVerifier {
     fn is_kt_attested(&self, account_id: AccountId, identity_pubkey: &IdentityPublicKey) -> bool;
 }
 
+// Forwarding impls so a verifier can be shared across the store actor thread as
+// `Arc<dyn IdentityVerifier + Send + Sync>` and still satisfy the
+// `&impl IdentityVerifier` parameter every group operation takes. Without these,
+// the persisted path would need its own verification entry point, which is
+// exactly how two copies of an INV-4 rule start to drift apart.
+impl<T: IdentityVerifier + ?Sized> IdentityVerifier for &T {
+    fn is_kt_attested(&self, account_id: AccountId, identity_pubkey: &IdentityPublicKey) -> bool {
+        (**self).is_kt_attested(account_id, identity_pubkey)
+    }
+}
+
+impl<T: IdentityVerifier + ?Sized> IdentityVerifier for std::sync::Arc<T> {
+    fn is_kt_attested(&self, account_id: AccountId, identity_pubkey: &IdentityPublicKey) -> bool {
+        (**self).is_kt_attested(account_id, identity_pubkey)
+    }
+}
+
 /// Why a member credential was rejected. Any failure aborts the join (INV-4).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CredentialError {
@@ -45,6 +62,23 @@ pub fn verify_member_credential(
     leaf_signature_key: &[u8],
     verifier: &impl IdentityVerifier,
 ) -> Result<DeviceCredential, CredentialError> {
+    let cred = parse_member_credential(credential_bytes, leaf_signature_key)?;
+
+    // (2) That identity key is the one the KT log attests for the account.
+    if !verifier.is_kt_attested(cred.tbs.account_id, &cred.tbs.identity_pubkey) {
+        return Err(CredentialError::NotKtAttested);
+    }
+    Ok(cred)
+}
+
+/// The self-contained half of [`verify_member_credential`]: parse, check the
+/// identity signature, and bind the leaf key — everything except the KT
+/// attestation. Used to learn WHO is in a Welcome before deciding whether to
+/// attest them; the returned credential authorizes nothing on its own.
+pub fn parse_member_credential(
+    credential_bytes: &[u8],
+    leaf_signature_key: &[u8],
+) -> Result<DeviceCredential, CredentialError> {
     let cred: DeviceCredential =
         serde_json::from_slice(credential_bytes).map_err(|_| CredentialError::Malformed)?;
     verify_device_credential_signature(&cred)?;
@@ -52,11 +86,6 @@ pub fn verify_member_credential(
     // (1) The identity-signed device key is the leaf key OpenMLS authenticates.
     if leaf_signature_key != cred.tbs.device_pubkey.0 {
         return Err(CredentialError::DeviceKeyMismatch);
-    }
-
-    // (2) That identity key is the one the KT log attests for the account.
-    if !verifier.is_kt_attested(cred.tbs.account_id, &cred.tbs.identity_pubkey) {
-        return Err(CredentialError::NotKtAttested);
     }
     Ok(cred)
 }

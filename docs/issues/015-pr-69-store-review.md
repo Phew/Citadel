@@ -297,3 +297,34 @@ weaken any named evidence test, and does not count M2: the milestone stands
 at three of five criteria, with the FS harness test
 (`device_compromise_past_messages_unreadable_fs`) and the PCS differential
 oracle both still unwritten — see `docs/issues/014` and its answer.
+
+## Resolution (2026-09-06)
+
+The review is answered in the branch, not narrowed:
+
+- **R1** — both `actor.rs` comments (`receive` and `new_key_package`) carry
+  the Amendment 2 §D wire-message rationale (`2284e20`).
+- **R2** — `store_whole_file_rollback_boundary_is_explicit` exists and
+  restores an older complete file set through the production open path
+  (`bb8229d`).
+- **R3** — the committed corpus and manifest landed in `bb8229d`; the
+  single-transaction test v2 migration, its rollback evidence, and a
+  schema-drift refusal test land in the follow-up commit on the same branch,
+  with `store::codec_migration` as the production primitive. ADR-0007 §H is
+  rewritten to withdraw the 2026-08-14 deferral. Charge's merge of #69 is the
+  acceptance of that withdrawal (decision 2 above).
+- **N6's `Migration`-variant misuse** in `ledger.rs` is fixed
+  (`StoreError::CryptoProvider`); the unused
+  `StoreError::PastEpochRetentionRejected` is removed; the
+  `evidence.rs` `max_past_epochs()` doc states the accessor's real contract.
+
+One finding this review could not make, because no macOS runner existed: on
+macOS every store test failed at the first open with
+`SQLITE_CANTOPEN_SYMLINK` (extended code 1550). The default temporary
+directory is under `/var`, a symlink to `/private/var`, and SQLite enforces
+`SQLITE_OPEN_NOFOLLOW` against every path component. The store's behaviour is
+correct and intended (a profile root reached through a link is refused); the
+test fixtures now canonicalize their temporary roots. Production profile roots
+under `~/Library/Application Support` contain no symlink. Recorded here so the
+first macOS runner's first green run is not mistaken for evidence that nothing
+was ever wrong on that platform.

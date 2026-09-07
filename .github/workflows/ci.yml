@@ -48,6 +48,18 @@ jobs:
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
 
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
@@ -121,6 +133,156 @@ jobs:
       - name: cargo deny
         run: cargo deny check
 
+  # ADR-0007 §2 requires the local encrypted client store's credential-store
+  # contract to be exercised against the REAL native backend, not a double. The
+  # full requirement is one runner per desktop target; this repository has only
+  # Linux runners, so this job covers the Linux third of it and the Windows and
+  # macOS thirds remain open (stated in crates/citadel-core/src/store/tests.rs
+  # rather than left to be discovered).
+  #
+  # The tests it runs are #[ignore]d by default on purpose: a developer machine
+  # with no D-Bus session must not appear to have covered them. AGENTS.md rule 4
+  # says missing infrastructure is a test failure, so this job PROVISIONS the
+  # infrastructure and runs them with --include-ignored, instead of letting them
+  # be silently skipped in the one place they are claimed as evidence.
+  store-evidence:
+    name: store · native Secret Service backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      # dbus-x11 supplies dbus-run-session; gnome-keyring supplies the Secret
+      # Service implementation the adapter actually talks to.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev dbus-x11 gnome-keyring
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # The login keyring must be CREATED on a fresh runner: --unlock reads the
+      # password from stdin and unlocks-or-creates it, but ONLY when the
+      # password is non-empty — read_login_password treats zero bytes on stdin
+      # as "no password" and skips unlock/create entirely (gnome-keyring 46
+      # daemon/gkd-main.c), which left zero collections and failed every write
+      # with ReadAlias("default") → "/" → Locked("no result found") in the
+      # job's first run (30325276041). With a non-empty password the daemon
+      # creates an unlocked login keyring, and the service aliases "default" to
+      # "login" when no default file exists (daemon/dbus/gkd-secret-service.c
+      # update_default). Throwaway password, throwaway runner; the tests write
+      # only under a per-process service identity regardless.
+      - name: Native credential-store conformance
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            echo -n "citadel-ci" | gnome-keyring-daemon --unlock --components=secrets
+            # Provisioning gate (AGENTS.md rule 4): the default collection must
+            # resolve BEFORE the tests run. If provisioning ever regresses, the
+            # job fails here with a clear message — not inside a test assertion.
+            default=$(busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
+              org.freedesktop.Secret.Service ReadAlias s default | cut -d\" -f2)
+            if [ "$default" = "/" ]; then
+              echo "provisioning failed: no Secret Service collection aliased as default"
+              exit 1
+            fi
+            echo "default collection resolves to $default"
+            cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
+          '
+
+  # ADR-0007 §2's other two thirds. Until 2026-09-06 no job compiled
+  # store/credentials/apple.rs, store/credentials/windows.rs, or the Windows
+  # halves of paths.rs and lock.rs, and the first macOS execution found that
+  # every store test failed under the default $TMPDIR (see docs/issues/015,
+  # Resolution). These jobs compile and run the crate on each target, then run
+  # the #[ignore]d native-backend tests with --include-ignored after
+  # provisioning the backend, exactly as store-evidence does on Linux.
+  store-macos:
+    name: store · macOS Keychain backend
+    runs-on: macos-latest
+    timeout-minutes: 30
+    needs: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # clippy on THIS target is the point: the apple adapter's imports were
+      # "corrected by inspection" because nothing compiled them (apple.rs).
+      - name: cargo clippy (citadel-core, macOS)
+        run: cargo clippy -p citadel-core --all-targets --locked -- -D warnings
+
+      - name: cargo test (citadel-core, macOS, default $TMPDIR)
+        run: cargo test -p citadel-core --lib --locked
+
+      # The runner's login keychain may be locked or absent. A throwaway
+      # default keychain, unlocked with no auto-lock timeout, is what the
+      # adapter's legacy SecKeychain* calls land in. Provisioning gate: the
+      # default keychain must resolve to the one just created before the tests
+      # run, so a provisioning regression fails here with a clear message.
+      - name: Native credential-store conformance
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/citadel-ci.keychain-db"
+          security create-keychain -p citadel-ci "$kc"
+          security set-keychain-settings "$kc"
+          security unlock-keychain -p citadel-ci "$kc"
+          security default-keychain -s "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          resolved=$(security default-keychain | tr -d ' "')
+          if [ "$resolved" != "$kc" ]; then
+            echo "provisioning failed: default keychain is $resolved, expected $kc"
+            exit 1
+          fi
+          echo "default keychain resolves to $resolved"
+          cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
+
+  store-windows:
+    name: store · Windows Credential Manager backend
+    runs-on: windows-latest
+    timeout-minutes: 40
+    needs: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # Channel/components/profile come from rust-toolchain.toml (see rust job).
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # openssl-src builds vendored OpenSSL with Perl; the runner image ships
+      # Strawberry Perl. If a future image drops it, this is the step that
+      # fails and the message names perl, which is the cause.
+      - name: Perl is present for openssl-src
+        run: perl --version
+
+      - name: cargo clippy (citadel-core, Windows)
+        run: cargo clippy -p citadel-core --all-targets --locked -- -D warnings
+
+      # Includes the Windows halves of paths.rs and lock.rs, and the adapter's
+      # own tests, none of which any job has ever compiled. The Credential
+      # Manager needs no provisioning: the runner user has a logon session.
+      - name: cargo test (citadel-core, Windows)
+        run: cargo test -p citadel-core --lib --locked
+
+      - name: Native credential-store conformance
+        run: cargo test --locked -p citadel-core --lib -- --include-ignored store::credentials
+
   compose-smoke:
     name: docker compose health
     runs-on: ubuntu-latest
@@ -133,6 +295,18 @@ jobs:
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
+
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -213,6 +387,18 @@ jobs:
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
 
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
@@ -240,6 +426,18 @@ jobs:
       # Channel/components/profile come from rust-toolchain.toml (see rust job).
       - name: Install toolchain (rust-toolchain.toml)
         run: rustc --version
+
+      # The local encrypted client store (ADR-0007) links two C libraries on
+      # Linux. SQLCipher's page codec uses a vendored OpenSSL that `openssl-src`
+      # builds from source (perl, make and cc come with the runner image), and
+      # the Secret Service credential backend uses libdbus through pkg-config.
+      # libdbus-1-dev is installed explicitly rather than assumed present: an
+      # image change that dropped it would otherwise fail the build with a
+      # pkg-config error that looks nothing like its cause.
+      - name: Install system deps (SQLCipher/OpenSSL build, Secret Service)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1

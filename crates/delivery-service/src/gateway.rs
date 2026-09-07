@@ -28,6 +28,7 @@
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use citadel_proto::delivery::{GatewayClientFrame, GatewayServerFrame};
+use citadel_proto::envelope::EnvelopeKind;
 use citadel_proto::error::ErrorCode;
 use citadel_proto::ids::{DeviceId, GroupId};
 use futures_util::{SinkExt, StreamExt};
@@ -92,7 +93,15 @@ pub async fn run(socket: WebSocket, state: AppState, device: DeviceId) {
             }
             event = fanout_rx.recv() => {
                 match event {
-                    Ok((gid, envelope)) if subscribed.contains(&gid) => {
+                    // Subscribed groups, plus a Welcome addressed to THIS
+                    // device for a group it is not (cannot yet be)
+                    // subscribed to: an online invitee learns of the
+                    // invitation without reconnecting.
+                    Ok((gid, envelope, recipients))
+                        if subscribed.contains(&gid)
+                            || (envelope.kind == EnvelopeKind::Welcome
+                                && recipients.contains(&device)) =>
+                    {
                         let frame = GatewayServerFrame::Message {
                             envelope: (*envelope).clone(),
                         };
