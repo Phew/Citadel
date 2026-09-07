@@ -1,0 +1,28 @@
+[package]
+name = "citadel-ffi"
+description = "UniFFI surface over citadel-app for the native hosts (Swift, Kotlin, C#)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "citadel_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
+[dependencies]
+citadel-app = { workspace = true }
+citadel-core = { workspace = true }
+citadel-proto = { workspace = true }
+uniffi = { version = "0.32", features = ["tokio"] }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

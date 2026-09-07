@@ -5,6 +5,7 @@ members = [
     "crates/citadel-core",
     "crates/citadel-app",
     "crates/citadel-cli",
+    "crates/citadel-ffi",
     "crates/citadel-migrations",
     "crates/auth-service",
     "crates/delivery-service",
